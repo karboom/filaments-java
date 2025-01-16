@@ -9,6 +9,7 @@ import cn.hutool.core.util.StrUtil;
 import com.esotericsoftware.reflectasm.FieldAccess;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import lombok.SneakyThrows;
@@ -27,57 +28,57 @@ import static org.jooq.impl.DSL.*;
 
 /**
  * 说明
- * @param <T> test
  */
 
-// Todo 测试GIS
 public abstract class Filaments<T> {
-    static List<String> SQL_FUNC_LIST = List.of("date", "substr", "count");
-    static String NAME_SPLITTER = "|";
+    public static List<String> SQL_FUNC_LIST = List.of("date", "substr", "count");
+    public static String NAME_SPLITTER = "|";
+    public static Number DEFAULT_QUERY_P = 1;
+    public static Number DEFAULT_QUERY_PC = 20;
 
-    public ObjectMapper mapper;
+    // 这个mapper用来处理json嵌套对象的转换
+    public static ObjectMapper mapper;
+    static {
+        mapper = new ObjectMapper();
+        // Todo JSON 里面的null如何处理？
+        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+//        mapper.configure(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN, true);
+        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    }
 
     private final Class<T> dataClass;
     private final FieldAccess access;
 
-    private JSONFormat jsonFormat;
 
-
-    protected String table;
-    protected String pk = "id";
-
+    public String table;
+    public String pk = "id";
 
 
 
     // region 基础
-    public Filaments() {
+    public Filaments(String table) {
+        this.table = table;
+
         ParameterizedType superClass = (ParameterizedType) getClass().getGenericSuperclass();
 
         this.dataClass = (Class<T>) superClass.getActualTypeArguments()[0];
         this.access =  FieldAccess.get(this.dataClass);
 
 
-        this.jsonFormat = new JSONFormat()
-                .header(false)
-                .recordFormat(JSONFormat.RecordFormat.OBJECT);
 
-        // Todo 允许自定义mapper
-        var mapper = new ObjectMapper();
-        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-        mapper.configure(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN, true);
 
-        this.mapper = mapper;
     }
 
-    protected T before (T data) {
+    public T before (T data) {
         return data;
     };
 
-    protected T after (T data) {
+    public T after (T data) {
         return data;
     }
 
-    abstract public ValidatorBuilder initValidator();
+
+    abstract public ValidatorBuilder<T> initValidator();
 
 
     /**
@@ -329,15 +330,6 @@ public abstract class Filaments<T> {
         return q;
     }
 
-    protected SelectQuery<Record> buildLimit(SelectQuery<Record> q, Map<String, Object> query) {
-        var pc = Integer.parseInt((String) query.getOrDefault("pc", "20"));
-        var p = Integer.parseInt((String) query.getOrDefault("p", "1"));
-
-        q.addLimit(pc);
-        q.addOffset((p - 1) * pc);
-
-        return q;
-    }
 
 
     public LogicTreeNode parseLogic(String input) {
@@ -396,7 +388,7 @@ public abstract class Filaments<T> {
     public String buildHolder(Object[] value, String splitter) {
         return Stream.of(value)
                 .map(_ -> "?")
-                .collect(Collectors.joining(splitter + " "));
+                .collect(Collectors.joining(" " + splitter + " "));
     }
 
     public Object[] buildValue(Object value) {
@@ -459,8 +451,17 @@ public abstract class Filaments<T> {
 
 
             Condition subCond = switch (leftParts.getLast()) {
-                case "ge", "?" -> condition(String.format("%s > ?", buildFuncChain(sqlField, funcListShort)), value);
+                case "ge" -> condition(String.format("%s >= ?", buildFuncChain(sqlField, funcListShort)), value);
+                case "gt" -> condition(String.format("%s > ?", buildFuncChain(sqlField, funcListShort)), value);
+                case "le" -> condition(String.format("%s <= ?", buildFuncChain(sqlField, funcListShort)), value);
+                case "lt" -> condition(String.format("%s < ?", buildFuncChain(sqlField, funcListShort)), value);
                 case "in" -> condition(String.format("%s in (%s)", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
+                case "notIn" -> condition(String.format("%s not in (%s)", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
+                case "between" -> condition(String.format("%s between (%s)", buildFuncChain(sqlField, funcListShort), buildHolder(value, "and")), value);
+                case "notBetween" -> condition(String.format("%s not between (%s)", buildFuncChain(sqlField, funcListShort), buildHolder(value, "and")), value);
+                case "like" -> condition(String.format("%s like %s", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
+                case "notLike" -> condition(String.format("%s not like %s", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
+
                 default -> condition(String.format("%s = ?", buildFuncChain(sqlField, funcList)), value);
             };
 
@@ -491,7 +492,6 @@ public abstract class Filaments<T> {
 
     protected Condition buildCondition(Map<String, Object> query) {
         Iterator<String> it = query.keySet().iterator();
-
 
         var filteredQuery = new HashMap<>(query);
         filteredQuery.keySet().removeAll(List.of("p", "pc", "od", "rt", "gp", "pg", "lg"));
@@ -534,10 +534,42 @@ public abstract class Filaments<T> {
         SelectQuery<Record> q = this.buildSelect(db, query, null);
 
         if (query.containsKey("pc")) {
-            q.addLimit((int) query.get("pc"));
+            var pc = Integer.parseInt(query.get("pc").toString());
+            q.addLimit(pc);
+
+            // 页码参数不会单独存在
+            if (query.containsKey("p")) {
+                var p = Integer.parseInt(query.get("p").toString());
+                q.addOffset((p - 1) * pc);
+            }
         }
 
         return this.doQuery(q, false);
+    }
+
+    public PageResult<T> pages(DSLContext db, Map<String, Object> query) {
+        // 不能影响外部传入的参数
+        var copyQuery = new HashMap<>(query);
+        copyQuery.putIfAbsent("pc", Filaments.DEFAULT_QUERY_PC);
+        copyQuery.putIfAbsent("p", Filaments.DEFAULT_QUERY_P);
+
+        PageResult<T> res = new PageResult<T>();
+
+        res.list = this.get(db, copyQuery);
+
+        if (copyQuery.containsKey("pg")) {
+
+            copyQuery.remove("rt");
+
+            var count = this.aggregation(db, new HashMap<>(){{
+                put("count", "id");
+            }}, copyQuery, List.of(), null);
+
+            res.total = Integer.valueOf(count.getFirst().get("countId").toString());
+        }
+
+
+        return res;
     }
 
     public List<T> getByIds(DSLContext db, List<String> ids, Boolean lock) {
@@ -566,8 +598,17 @@ public abstract class Filaments<T> {
     // endregion
 
     // region 聚合
-    // Todo 返回啥数据结构
-    public Result<?> aggregation (DSLContext db, Map<String, Object> target, Map<String, Object> query, List<String> group, SelectQuery sub) {
+
+    /**
+     * 通用聚合查询函数
+     * @param db
+     * @param target {聚合函数: [字段]}
+     * @param query  筛选条件
+     * @param group  分组条件
+     * @param sub
+     * @return
+     */
+    public List<Map<String, Object>> aggregation (DSLContext db, Map<String, Object> target, Map<String, Object> query, List<String> group, SelectQuery sub) {
         var base = buildSelect(db, query, sub);
         base.getSelect().clear();
 
@@ -597,9 +638,7 @@ public abstract class Filaments<T> {
 
         }
 
-        var res = base.fetch();
-
-        return res;
+        return base.fetch().intoMaps();
     }
     // endregion
 

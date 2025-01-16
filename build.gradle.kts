@@ -1,8 +1,4 @@
 import com.vanniktech.maven.publish.SonatypeHost
-import com.vanniktech.maven.publish.JavaLibrary
-import com.vanniktech.maven.publish.JavadocJar
-
-
 
 plugins {
     id("java")
@@ -10,7 +6,7 @@ plugins {
 }
 
 group = "io.github.karboom"
-version = "1.0.0"
+version = "1.1.3"
 
 repositories {
     mavenCentral()
@@ -23,6 +19,8 @@ dependencies {
     implementation("am.ik.yavi:yavi:0.14.1")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")
     implementation("net.postgis:postgis-jdbc:2.5.1")
+    implementation("net.bytebuddy:byte-buddy:1.12.18")
+    implementation("net.bytebuddy:byte-buddy-agent:1.12.18")
 
     compileOnly("org.projectlombok:lombok:1.18.34")
     annotationProcessor("org.projectlombok:lombok:1.18.34")
@@ -56,16 +54,16 @@ mavenPublishing {
 
     signAllPublications()
 
-    coordinates("io.github.karboom", "filaments-java", "1.0.0")
+    coordinates("io.github.karboom", "filaments-java", "1.1.0")
 
     pom {
-        name.set("My Library")
-        description.set("A description of what my library does.")
-        inceptionYear.set("2020")
-        url.set("https://github.com/username/mylibrary/")
+        name.set("filaments")
+        description.set("")
+        inceptionYear.set("2024")
+        url.set("https://github.com/karboom/filaments-java")
         licenses {
             license {
-                name.set("The Apache License, Version 2.0")
+                name.set("MIT License")
                 url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
                 distribution.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
             }
@@ -78,9 +76,9 @@ mavenPublishing {
             }
         }
         scm {
-            url.set("https://github.com/username/mylibrary/")
-            connection.set("scm:git:git://github.com/username/mylibrary.git")
-            developerConnection.set("scm:git:ssh://git@github.com/username/mylibrary.git")
+            url.set("https://github.com/karboom/filaments-java")
+            connection.set("scm:git:git://github.com/karboom/filaments-java.git")
+            developerConnection.set("scm:git:ssh://git@github.com/karboom/filaments-java.git")
         }
     }
 }

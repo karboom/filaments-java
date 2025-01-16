@@ -1,10 +1,20 @@
 package me.karboom.java;
 
 import am.ik.yavi.builder.ValidatorBuilder;
+import am.ik.yavi.core.CustomConstraint;
 import cn.hutool.core.util.IdUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AllArgsConstructor;
 import lombok.SneakyThrows;
+import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.agent.ByteBuddyAgent;
+import net.bytebuddy.dynamic.loading.ClassReloadingStrategy;
+import net.bytebuddy.implementation.FixedValue;
+import net.bytebuddy.implementation.MethodDelegation;
+import net.bytebuddy.matcher.ElementMatchers;
+import org.assertj.core.api.recursive.comparison.RecursiveComparisonConfiguration;
 import org.jooq.*;
+import org.jooq.conf.ParamType;
 import org.jooq.exception.DataTypeException;
 import org.jooq.impl.DSL;
 import org.jooq.impl.DefaultBinding;
@@ -14,45 +24,39 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.sql.*;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.jooq.SQLDialect.SQLITE;
 
 public class FilamentsTest {
-    class JSONConverterProvider implements ConverterProvider {
-        final ConverterProvider delegate = new DefaultConverterProvider();
-        final ObjectMapper mapper = new ObjectMapper();
+
+
+    @AllArgsConstructor
+    public class EnumConstraint implements CustomConstraint<String> {
+        private Class cls;
 
         @Override
-        public <T, U> Converter<T, U> provide(Class<T> tType, Class<U> uType) {
+        public String defaultMessageFormat() {
+            return "";
+        }
 
-            // Our specialised implementation can convert from JSON (optionally, add JSONB, too)
-            if (tType == JSON.class) {
-                return Converter.ofNullable(tType, uType,
-                        t -> {
-                            try {
-                                return mapper.readValue(((JSON) t).data(), uType);
-                            }
-                            catch (Exception e) {
-                                throw new DataTypeException("JSON mapping error", e);
-                            }
-                        },
-                        u -> {
-                            try {
-                                return (T) JSON.valueOf(mapper.writeValueAsString(u));
-                            }
-                            catch (Exception e) {
-                                throw new DataTypeException("JSON mapping error", e);
-                            }
-                        }
-                );
+        @Override
+        public String messageKey() {
+            return "string.enum";
+        }
+
+        @Override
+        public boolean test(String s) {
+            try {
+                Enum.valueOf(this.cls, s);
+                return true;
+            } catch (Exception e) {
+                return false;
             }
-
-            // Delegate all other type pairs to jOOQ's default
-            else
-                return delegate.provide(tType, uType);
         }
     }
 
@@ -60,9 +64,32 @@ public class FilamentsTest {
     DSLContext db;
     String table = "user";
 
+
+
+    @AllArgsConstructor
+    public enum TYPE {
+        A("普通"),
+        B("中级"),
+        C("高级"),
+        ;
+        public final String desc;
+    }
+
+
+
     @SneakyThrows
     @BeforeEach
     void init() {
+
+        ByteBuddyAgent.install();
+        var cls = Arrays.stream(DefaultBinding.class.getDeclaredClasses()).toList().get(11);
+        new ByteBuddy()
+                .redefine(cls)
+                .method(ElementMatchers.named("get0"))
+                .intercept(FixedValue.value("asd"))
+                .make()
+                .load(cls.getClassLoader(), ClassReloadingStrategy.fromInstalledAgent());
+
 
         String userName = "postgres";
         String password = "test";
@@ -88,7 +115,8 @@ CREATE TABLE if not exists "%s" (
     roles JSONB DEFAULT '[]'::jsonb,
     extra JSONB not null DEFAULT '{}'::jsonb,
     create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    location varchar(50) NOT NULL
+    location varchar(50) NOT NULL,
+    geo_data geometry
 );
 """.formatted(table));
 
@@ -108,12 +136,15 @@ INSERT INTO "%s" (id, name, wechat_id, type, roles, extra, create_time, location
 """.formatted(table));
 
         var T = table;
-        filaments = new Filaments<User>() {
+        filaments = new Filaments<User>("user") {
+
             @Override
-            public ValidatorBuilder initValidator() {
+            public ValidatorBuilder<User> initValidator() {
                 return ValidatorBuilder.<User>of()
                         .constraint(User::getId, "id", c -> c.notNull())
-                        .constraint(User::getType, "type", c -> c.notNull())
+                        .constraint(User::getType, "type", c -> c
+                                .predicate(new EnumConstraint(TYPE.class)).message("类型错误")
+                                .notNull())
                         .constraint(User::getRoles, "roles", c -> c.notNull())
                         .nest(User::getExtra, "extra", b-> b
                                 .constraint(User.Extra::getEmail, "email", c -> c.notNull()))
@@ -152,14 +183,72 @@ INSERT INTO "%s" (id, name, wechat_id, type, roles, extra, create_time, location
                 return null;
             }
         };
-        var res1 = m1.buildField(new HashMap<>(){{
-            put("a|in", "3");
-            put("b|in", 3);
-            put("c|in", "1,2");
-            put("d|in", List.of("x"));
+
+        var res0 = m1.buildField(new HashMap<>() {{
+            put("a", "3");
         }}, "and");
-        System.out.println(res1);
-//        var t1 = filaments.buildField(con, new HashMap<>(), "");
+        assertThat(res0.toString().replace("\"", "")).isEqualTo("(a = '3')");
+
+
+        // 测试 ge
+        var res1 = m1.buildField(new HashMap<>() {{
+            put("a|ge", "3");
+        }}, "and");
+        assertThat(res1.toString().replace("\"", "")).isEqualTo("(a >= '3')");
+
+        // 测试 gt
+        var res2 = m1.buildField(new HashMap<>() {{
+            put("a|gt", "3");
+        }}, "and");
+        assertThat(res2.toString().replace("\"", "")).isEqualTo("(a > '3')");
+
+        // 测试 le
+        var res3 = m1.buildField(new HashMap<>() {{
+            put("a|le", "3");
+        }}, "and");
+        assertThat(res3.toString().replace("\"", "")).isEqualTo("(a <= '3')");
+
+        // 测试 lt
+        var res4 = m1.buildField(new HashMap<>() {{
+            put("a|lt", "3");
+        }}, "and");
+        assertThat(res4.toString().replace("\"", "")).isEqualTo("(a < '3')");
+
+        // 测试 in
+        var res5 = m1.buildField(new HashMap<>() {{
+            put("a|in", "3,4,5");
+        }}, "and");
+        assertThat(res5.toString().replace("\"", "")).isEqualTo("(a in ('3' , '4' , '5'))");
+
+        // 测试 notIn
+        var res6 = m1.buildField(new HashMap<>() {{
+            put("a|notIn", "3,4,5");
+        }}, "and");
+        assertThat(res6.toString().replace("\"", "")).isEqualTo("(a not in ('3' , '4' , '5'))");
+
+        // 测试 between
+        var res7 = m1.buildField(new HashMap<>() {{
+            put("a|between", List.of('3', '5'));
+        }}, "and");
+        assertThat(res7.toString().replace("\"", "")).isEqualTo("(a between ('3' and '5'))");
+
+        // 测试 notBetween
+        var res8 = m1.buildField(new HashMap<>() {{
+            put("a|notBetween", "3,5");
+        }}, "and");
+        assertThat(res8.toString().replace("\"", "")).isEqualTo("(a not between ('3' and '5'))");
+
+        // 测试 like
+        var res9 = m1.buildField(new HashMap<>() {{
+            put("a|like", "test%");
+        }}, "and");
+        assertThat(res9.toString().replace("\"", "")).isEqualTo("(a like 'test%')");
+
+        // 测试 notLike
+        var res10 = m1.buildField(new HashMap<>() {{
+            put("a|notLike", "test%");
+        }}, "and");
+        assertThat(res10.toString().replace("\"", "")).isEqualTo("(a not like 'test%')");
 
     }
 
@@ -206,17 +295,19 @@ INSERT INTO "%s" (id, name, wechat_id, type, roles, extra, create_time, location
             put("type", "B");
         }}, List.of("type"), null);
 
-        assertThat(res.getValue(0, "type")).isEqualTo("B");
+        assertThat(res.get(0).get("type")).isEqualTo("B");
 
         System.out.println(res);
     }
 
     @Test
     void create(){
+        var ID = IdUtil.getSnowflake().nextIdStr();
         var obj = new User(){{
-            setId(IdUtil.getSnowflake().nextIdStr());
-            setType("B");
+            setId(ID);
+            setType("C");
             setName("名字");
+            setWechatId("id");
             setRoles(List.of("1", "2", "3"));
             setExtra(new Extra(){{
                 setAge(12);
@@ -229,6 +320,9 @@ INSERT INTO "%s" (id, name, wechat_id, type, roles, extra, create_time, location
         var res = filaments.create(db, List.of(obj));
 
         assertThat(res).isEqualTo(1);
+
+        var res2 = filaments.getByIds(db, ID);
+        assertThat(res2).usingRecursiveComparison(new RecursiveComparisonConfiguration(){{ignoreFields("createTime");}}).isEqualTo(obj);
     }
 
     @Test
@@ -251,6 +345,22 @@ INSERT INTO "%s" (id, name, wechat_id, type, roles, extra, create_time, location
         assertThat(res.size()).isEqualTo(10);
         assertThat(res.get(0).extra).isNull();
         assertThat(res.get(1).id).isEqualTo("2");
+
+
+    }
+
+    @Test
+    void pages() {
+        var query = new HashMap<String, Object>(){{
+            put("rt","name,id");
+            put("pc", 1);
+            put("pg", 1);
+        }};
+
+        var res = filaments.pages(db, query);
+
+        assertThat(res.total).isEqualTo(10);
+        assertThat(res.list.size()).isEqualTo(1);
     }
 
     @Test
