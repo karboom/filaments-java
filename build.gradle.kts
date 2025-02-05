@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "io.github.karboom"
-version = "1.1.3"
+version = "1.1.4"
 
 repositories {
     mavenCentral()
@@ -22,16 +22,16 @@ dependencies {
     implementation("net.bytebuddy:byte-buddy:1.12.18")
     implementation("net.bytebuddy:byte-buddy-agent:1.12.18")
 
-    compileOnly("org.projectlombok:lombok:1.18.34")
-    annotationProcessor("org.projectlombok:lombok:1.18.34")
+    compileOnly("org.projectlombok:lombok:1.18.36")
+    annotationProcessor("org.projectlombok:lombok:1.18.36")
 
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.assertj:assertj-core:3.26.3")
     testImplementation("org.postgresql:postgresql:42.7.4")
 
-    testCompileOnly("org.projectlombok:lombok:1.18.34")
-    testAnnotationProcessor("org.projectlombok:lombok:1.18.34")
+    testCompileOnly("org.projectlombok:lombok:1.18.36")
+    testAnnotationProcessor("org.projectlombok:lombok:1.18.36")
 }
 
 
@@ -54,7 +54,7 @@ mavenPublishing {
 
     signAllPublications()
 
-    coordinates("io.github.karboom", "filaments-java", "1.1.0")
+    coordinates("io.github.karboom", "filaments-java", "1.1.4")
 
     pom {
         name.set("filaments")
