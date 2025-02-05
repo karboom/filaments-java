@@ -2,6 +2,7 @@ package me.karboom.java;
 
 import am.ik.yavi.builder.ValidatorBuilder;
 import am.ik.yavi.core.ConstraintPredicates;
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.ArrayUtil;
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.ReflectUtil;
@@ -146,6 +147,7 @@ public abstract class Filaments<T> {
     public Integer create(DSLContext db, List<T> data) {
         var objectFields = List.of(this.dataClass.getDeclaredFields());
 
+        // Todo 字段名增加引号
         var dbFields = objectFields.stream()
                 .map(r -> field(StrUtil.toUnderlineCase(r.getName())))
                 .toList();
@@ -443,7 +445,10 @@ public abstract class Filaments<T> {
 
             var sqlField = name(fieldNameSafe(fieldName)).toString();
             if (fieldName.contains(".")) {
-                // Todo 区分pg和mysql
+                // Todo 区分pg和mysql，暂时只有pg的
+                var segments = StrUtil.split(fieldName, '.');
+
+                sqlField = "%s #>> '{%s}'".formatted(segments.get(0), String.join(",", segments.subList(1, segments.size()) ));
             }
             if (fieldName.contains("[")) {
 
