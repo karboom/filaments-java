@@ -456,6 +456,7 @@ public abstract class Filaments<T> {
 
 
             Condition subCond = switch (leftParts.getLast()) {
+                case "ne" -> condition(String.format("%s <> ?", buildFuncChain(sqlField, funcListShort)), value);
                 case "ge" -> condition(String.format("%s >= ?", buildFuncChain(sqlField, funcListShort)), value);
                 case "gt" -> condition(String.format("%s > ?", buildFuncChain(sqlField, funcListShort)), value);
                 case "le" -> condition(String.format("%s <= ?", buildFuncChain(sqlField, funcListShort)), value);

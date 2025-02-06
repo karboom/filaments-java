@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "io.github.karboom"
-version = "1.1.4"
+version = "1.1.5"
 
 repositories {
     mavenCentral()
@@ -54,7 +54,7 @@ mavenPublishing {
 
     signAllPublications()
 
-    coordinates("io.github.karboom", "filaments-java", "1.1.4")
+    coordinates("io.github.karboom", "filaments-java", version.toString())
 
     pom {
         name.set("filaments")
