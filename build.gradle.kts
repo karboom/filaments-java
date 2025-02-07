@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "io.github.karboom"
-version = "1.1.5"
+version = "1.1.6"
 
 repositories {
     mavenCentral()
@@ -18,6 +18,7 @@ dependencies {
     implementation("com.esotericsoftware:reflectasm:1.11.9")
     implementation("am.ik.yavi:yavi:0.14.1")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")
+    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.2")
     implementation("net.postgis:postgis-jdbc:2.5.1")
     implementation("net.bytebuddy:byte-buddy:1.12.18")
     implementation("net.bytebuddy:byte-buddy-agent:1.12.18")

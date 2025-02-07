@@ -13,6 +13,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.SneakyThrows;
 import org.jooq.*;
 import org.jooq.Record;
@@ -45,6 +47,11 @@ public abstract class Filaments<T> {
         mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
 //        mapper.configure(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN, true);
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        mapper.configure(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE, false);
+
+        JavaTimeModule javaTimeModule = new JavaTimeModule();
+
+        mapper.registerModule(javaTimeModule);
     }
 
     private final Class<T> dataClass;
