@@ -447,7 +447,7 @@ public abstract class Filaments<T> {
             var leftParts = StrUtil.split(key, Filaments.NAME_SPLITTER);
             var funcList = new ArrayList<>(leftParts).subList(1, leftParts.size());
             var funcListShort = new ArrayList<>(leftParts).subList(1, leftParts.size() > 1 ? leftParts.size() -1 : 1);
-            var fieldName = leftParts.get(0);
+            var fieldName = StrUtil.toUnderlineCase(leftParts.get(0));
 
 
             var sqlField = name(fieldNameSafe(fieldName)).toString();
