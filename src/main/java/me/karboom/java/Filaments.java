@@ -10,10 +10,9 @@ import cn.hutool.core.util.StrUtil;
 import com.esotericsoftware.reflectasm.FieldAccess;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
-import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.SneakyThrows;
 import org.jooq.*;
@@ -34,6 +33,7 @@ import static org.jooq.impl.DSL.*;
  */
 
 public abstract class Filaments<T> {
+    public static List<String> KEEP_FIELDS = List.of();
     public static List<String> SQL_FUNC_LIST = List.of("date", "substr", "count");
     public static String NAME_SPLITTER = "|";
     public static Number DEFAULT_QUERY_P = 1;
@@ -442,6 +442,11 @@ public abstract class Filaments<T> {
         Condition condition = noCondition();
 
         for (String key : pickedQuery.keySet()) {
+            if (key.equals("raw")) {
+                condition = whereType.equals("and") ? condition.and((Condition) pickedQuery.get(key)) : condition.or((Condition) pickedQuery.get(key));
+                continue;
+            }
+
             var value = buildValue(pickedQuery.get(key));
 
             var leftParts = StrUtil.split(key, Filaments.NAME_SPLITTER);
@@ -507,7 +512,7 @@ public abstract class Filaments<T> {
         Iterator<String> it = query.keySet().iterator();
 
         var filteredQuery = new HashMap<>(query);
-        filteredQuery.keySet().removeAll(List.of("p", "pc", "od", "rt", "gp", "pg", "lg"));
+        filteredQuery.keySet().removeAll(List.of("p", "pc", "od", "rt", "gp", "pg", "lg", "raw"));
 
         var logicTree = new LogicTreeNode();
         var lg = (String) query.get("lg");
@@ -535,7 +540,20 @@ public abstract class Filaments<T> {
                 .header(false)
                 .recordFormat(JSONFormat.RecordFormat.OBJECT));
 
-        List<T> res = mapper.readValue(json, mapper.getTypeFactory().constructParametricType(List.class, this.dataClass));
+        // 为了兼容PG数据库指定返回字段的时候，json类型无法被正确识别
+        var arrayNode = mapper.readValue(json, ArrayNode.class);
+        for (var obj : arrayNode) {
+            var it = obj.fields();
+            while (it.hasNext()) {
+                var field = it.next();
+                var value = field.getValue().asText();
+                if (value.startsWith("{") || value.startsWith("[")) {
+                    field.setValue(mapper.readValue(value.toString(), JsonNode.class));
+                }
+            }
+        }
+
+        List<T> res = mapper.convertValue(arrayNode, mapper.getTypeFactory().constructParametricType(List.class, this.dataClass));
 
         // 处理after
         return res.stream().map(this::after).toList();
