@@ -48,6 +48,7 @@ public abstract class Filaments<T> {
 //        mapper.configure(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN, true);
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         mapper.configure(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE, false);
+        mapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
 
         JavaTimeModule javaTimeModule = new JavaTimeModule();
 
@@ -140,7 +141,7 @@ public abstract class Filaments<T> {
 
     @SneakyThrows
     public Object handleJson(Object value) {
-        if (value instanceof List || value instanceof Set || value.getClass().getName().startsWith(dataClass.getName()) ||
+        if (value instanceof List || value instanceof Set || value instanceof Map || value.getClass().getName().startsWith(dataClass.getName()) ||
                 value.getClass().getClassLoader() != null) {
             value = mapper.writeValueAsString(value);
         }
@@ -411,6 +412,8 @@ public abstract class Filaments<T> {
             case Set<?> s -> {
                 return s.toArray();
             }
+            // 空数组类型的条件直接过滤？
+            // Todo 兼容ObjectNode
             default -> {
                 return new Object[]{value};
             }
