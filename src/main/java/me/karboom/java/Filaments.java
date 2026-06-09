@@ -483,6 +483,14 @@ public abstract class Filaments<T> {
                 case "like" -> condition(String.format("%s like %s", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
                 case "notLike" -> condition(String.format("%s not like %s", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
 
+                // Todo临时支持pg
+                case "intersect" -> {
+                    // Todo 安全问题？
+                    var jsonCond = Stream.of(value).map(v -> "@ == \"%s\"".formatted(v)).collect(Collectors.joining(" || "));
+                    var str = "jsonb_path_exists(%s, '$[*] ? (%s)')".formatted(sqlField, jsonCond);
+                    yield condition(str, value);
+                }
+
                 default -> condition(String.format("%s = ?", buildFuncChain(sqlField, funcList)), value);
             };
 
@@ -564,6 +572,10 @@ public abstract class Filaments<T> {
     // endregion
 
     // region 直接查询
+
+    /**
+     * 查询全部接口，一般用于内部查表
+     */
     public List<T> get(DSLContext db, Map<String, Object> query) {
         SelectQuery<Record> q = this.buildSelect(db, query, null);
 
@@ -581,6 +593,9 @@ public abstract class Filaments<T> {
         return this.doQuery(q, false);
     }
 
+    /**
+     * 分页查询接口，一般用于返回给前端
+     */
     public PageResult<T> pages(DSLContext db, Map<String, Object> query) {
         // 不能影响外部传入的参数
         var copyQuery = new HashMap<>(query);
@@ -594,6 +609,7 @@ public abstract class Filaments<T> {
         if (copyQuery.containsKey("pg")) {
 
             copyQuery.remove("rt");
+            copyQuery.remove("od");
 
             var count = this.aggregation(db, new HashMap<>(){{
                 put("count", "id");
@@ -690,7 +706,7 @@ public abstract class Filaments<T> {
         }
     }
 
-    private static class LogicTreeNode {
+    static class LogicTreeNode {
         public String type = "and";
         public List<Object> value = new ArrayList<>();
         public String str = "";

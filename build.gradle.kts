@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "io.github.karboom"
-version = "1.1.10"
+version = "1.1.16"
 
 repositories {
     mavenCentral()

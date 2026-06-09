@@ -3,34 +3,20 @@ package me.karboom.java;
 import am.ik.yavi.builder.ValidatorBuilder;
 import am.ik.yavi.core.CustomConstraint;
 import cn.hutool.core.util.IdUtil;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AllArgsConstructor;
 import lombok.SneakyThrows;
-import net.bytebuddy.ByteBuddy;
-import net.bytebuddy.agent.ByteBuddyAgent;
-import net.bytebuddy.dynamic.loading.ClassReloadingStrategy;
-import net.bytebuddy.implementation.FixedValue;
-import net.bytebuddy.implementation.MethodDelegation;
-import net.bytebuddy.matcher.ElementMatchers;
 import org.assertj.core.api.recursive.comparison.RecursiveComparisonConfiguration;
 import org.jooq.*;
-import org.jooq.conf.ParamType;
-import org.jooq.exception.DataTypeException;
 import org.jooq.impl.DSL;
-import org.jooq.impl.DefaultBinding;
 import org.jooq.impl.DefaultConfiguration;
-import org.jooq.impl.DefaultConverterProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.sql.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.jooq.SQLDialect.SQLITE;
 
 public class FilamentsTest {
 
@@ -80,20 +66,9 @@ public class FilamentsTest {
     @SneakyThrows
     @BeforeEach
     void init() {
-
-        ByteBuddyAgent.install();
-        var cls = Arrays.stream(DefaultBinding.class.getDeclaredClasses()).toList().get(11);
-        new ByteBuddy()
-                .redefine(cls)
-                .method(ElementMatchers.named("get0"))
-                .intercept(FixedValue.value("asd"))
-                .make()
-                .load(cls.getClassLoader(), ClassReloadingStrategy.fromInstalledAgent());
-
-
-        String userName = "postgres";
-        String password = "test";
-        String url = "jdbc:postgresql://127.0.0.1:5432/postgres?stringtype=unspecified";
+        String url = System.getenv("DB_URL");
+        String userName = System.getenv("DB_USER");
+        String password = System.getenv("DB_PASSWORD");
 
         var conn = DriverManager.getConnection(url, userName, password);
 //        ((org.postgresql.PGConnection)conn).addDataType("geometry","org.postgis.PGgeometry");
