@@ -1,13 +1,11 @@
-package me.karboom.java;
+package me.karboom.java.filaments;
 
-import cn.hutool.core.date.DateTime;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
-import java.util.Date;
+import java.time.OffsetDateTime;
 import java.util.List;
 
 @Data
@@ -23,9 +21,27 @@ public class User {
         public String email;
         public Number totalCount;
     }
-    public List<String> roles;
+
+    @Data
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class RoleGrant{
+        public Boolean edit;
+    }
+
+
+    @Data
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class Role {
+        public String name;
+        public RoleGrant grant;
+    }
+
+    public List<Role> roles;
+    public List<String> actionIds;
     public String name;
-    public DateTime createTime;
+    public OffsetDateTime createTime;
     public String wechatId;
     public String type;
     public String id;

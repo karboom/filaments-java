@@ -1,10 +1,10 @@
-package me.karboom.java;
+package me.karboom.java.filaments;
 
 import cn.hutool.core.util.StrUtil;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import me.karboom.java.filaments.spec.FieldCondition;
+import me.karboom.java.filaments.spec.LogicNode;
+import me.karboom.java.filaments.spec.OrderSpec;
+import me.karboom.java.filaments.spec.SelectSpec;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -21,71 +21,6 @@ public class SelectSpecBuilder {
 
     public static final String NAME_SPLITTER = "|";
 
-    // ==================== 数据类 ====================
-
-    /**
-     * 查询规范对象 - 结构化表示
-     */
-    @Data
-    public static class SelectSpec {
-        private List<String> selectFields;      // 返回字段，null 表示 SELECT *
-        private LogicNode where;                // WHERE 条件树
-        private List<OrderSpec> orderBy;        // ORDER BY
-        private List<String> groupBy;           // GROUP BY
-        private Map<String, List<String>> aggregations; // 聚合 {函数：字段}
-        private Integer limit;
-        private Integer offset;
-    }
-
-    /**
-     * 排序规则
-     */
-    @Data
-    @Builder
-    public static class OrderSpec {
-        public enum Direction { ASC, DESC }
-
-        private String field;
-        private Direction direction;
-    }
-
-    /**
-     * 逻辑树节点
-     */
-    @Data
-    @Builder
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class LogicNode {
-
-        public String type = "and";
-        public List<Object> value = new ArrayList<>();
-        public String str = "";
-        public List<String> allChild = new ArrayList<>();
-        public List<LogicNode> children = new ArrayList<>();
-
-
-    }
-
-    /**
-     * 条件表达式
-     */
-    @Data
-    public static class FieldCondition {
-        public enum Operator {
-            EQ, NE, GT, GE, LT, LE,
-            IN, NOT_IN,
-            BETWEEN, NOT_BETWEEN,
-            LIKE, NOT_LIKE,
-            INTERSECT
-        }
-
-        private String field;
-        private Operator operator;
-        private List<Object> values;
-        private List<String> funcChain;
-    }
-
     // ==================== 成员变量 ====================
 
 
@@ -100,8 +35,6 @@ public class SelectSpecBuilder {
         parseSelectFields(query, spec);
         parseOrderBy(query, spec);
         parseWhere(query, spec);
-        parseGroupBy(query, spec);
-        parseAggregations(query, spec);
         parsePagination(query, spec);
 
         return spec;
@@ -136,51 +69,79 @@ public class SelectSpecBuilder {
 
         var orderByList = new ArrayList<OrderSpec>();
         for (String part : list) {
-            part = StrUtil.toUnderlineCase(part);
             if (part.startsWith("-")) {
                 orderByList.add(OrderSpec.builder()
                         .field(part.substring(1))
-                        .direction(OrderSpec.Direction.DESC)
+                        .direction(OrderSpec.DESC)
                         .build());
             } else {
                 orderByList.add(OrderSpec.builder()
                         .field(part)
-                        .direction(OrderSpec.Direction.ASC)
+                        .direction(OrderSpec.ASC)
                         .build());
             }
         }
-        spec.setOrderBy(orderByList);
+        if (!orderByList.isEmpty()) {
+            spec.setOrderBy(orderByList);
+        }
     }
 
     private void parseWhere(Map<String, Object> query, SelectSpec spec) {
         var filteredQuery = new HashMap<>(query);
-        filteredQuery.keySet().removeAll(List.of("p", "pc", "od", "rt", "gp", "pg", "lg", "lock"));
+        filteredQuery.keySet().removeAll(List.of("p", "pc", "od", "rt", "pg", "lg", "lock", "raw"));
 
-        LogicNode logicTree = LogicNode.builder()
-                .type("and")
+        // 解析 lg 子树
+        LogicNode lgTree = null;
+        var lg = (String) query.get("lg");
+        if (lg != null) {
+            lgTree = parseLogic(lg);
+        }
+
+        // 如果只有 lg 没有其他条件，直接使用 lgTree
+        if (lgTree != null && filteredQuery.isEmpty()) {
+            parseLogicTreeConditions(lgTree, filteredQuery);
+            spec.setWhere(lgTree);
+            return;
+        }
+
+        // 创建顶层 AND 节点，lg 作为子树
+        LogicNode topNode = LogicNode.builder()
+                .type(LogicNode.AND)
                 .value(new ArrayList<>())
                 .allChild(new ArrayList<>())
                 .children(new ArrayList<>())
-                .build();;
-        var lg = (String) query.get("lg");
-        if (lg != null) {
-            logicTree = parseLogic(lg);
+                .build();
+
+        // 添加非 lg 覆盖的查询参数
+        Set<String> lgKeys = lgTree != null ? new HashSet<>(lgTree.getAllChild()) : Set.of();
+        for (String key : filteredQuery.keySet()) {
+            if (!lgKeys.contains(key)) {
+                topNode.getValue().add(key);
+            }
+        }
+        topNode.getAllChild().addAll(filteredQuery.keySet());
+        if (lgTree != null) {
+            topNode.getAllChild().addAll(lgTree.getAllChild());
         }
 
-        var logicTreeDefaultValue = new HashMap<>(filteredQuery);
-        logicTreeDefaultValue.keySet().removeAll(logicTree.getAllChild());
-        logicTree.getValue().addAll(logicTreeDefaultValue.keySet());
+        // 将 lg 子树加入顶层节点
+        if (lgTree != null) {
+            topNode.getValue().add(lgTree);
+            topNode.getChildren().add(lgTree);
+        }
 
-        // 将条件解析为 FieldCondition 对象
-        parseLogicTreeConditions(logicTree, filteredQuery);
-
-        spec.setWhere(logicTree);
+        parseLogicTreeConditions(topNode, filteredQuery);
+        spec.setWhere(topNode);
     }
 
     private void parseLogicTreeConditions(LogicNode node, Map<String, Object> query) {
         for (int i = 0; i < node.getValue().size(); i++) {
             Object item = node.getValue().get(i);
-            if (item instanceof String) {
+            if (item instanceof String[]) {
+                String[] kv = (String[]) item;
+                FieldCondition cond = buildFieldCondition(Map.of(kv[0], (Object) kv[1]), kv[0]);
+                node.getValue().set(i, cond);
+            } else if (item instanceof String) {
                 String key = (String) item;
                 var pickedQuery = new HashMap<>(query);
                 pickedQuery.keySet().retainAll(List.of(key));
@@ -203,80 +164,42 @@ public class SelectSpecBuilder {
         }
     }
 
-    private void parseGroupBy(Map<String, Object> query, SelectSpec spec) {
-        var gp = query.get("gp");
-        var list = new ArrayList<String>();
-
-        switch (gp) {
-            case String s -> list.addAll(StrUtil.split(s, ","));
-            case List<?> l -> list.addAll(l.stream().map(Object::toString).toList());
-            case null -> {}
-            default -> throw new IllegalStateException("Unexpected value: " + gp);
-        }
-
-        var groupByList = new ArrayList<String>();
-        for (String part : list) {
-            groupByList.add(StrUtil.toUnderlineCase(part));
-        }
-        if (!groupByList.isEmpty()) {
-            spec.setGroupBy(groupByList);
-        }
-    }
-
-    private void parseAggregations(Map<String, Object> query, SelectSpec spec) {
-        var aggregationKeys = List.of("count", "sum", "avg", "min", "max", "countDistinct");
-        var aggregations = new HashMap<String, List<String>>();
-
-        for (String key : aggregationKeys) {
-            if (query.containsKey(key)) {
-                var value = query.get(key);
-                var fieldList = new ArrayList<String>();
-
-                switch (value) {
-                    case String s -> fieldList.add(StrUtil.toUnderlineCase(s));
-                    case List<?> l -> fieldList.addAll(l.stream().map(Object::toString).map(StrUtil::toUnderlineCase).toList());
-                    case Set<?> s -> fieldList.addAll(s.stream().map(Object::toString).map(StrUtil::toUnderlineCase).toList());
-                    default -> throw new IllegalStateException("Unexpected value: " + value);
-                }
-                aggregations.put(key, fieldList);
-            }
-        }
-
-        if (!aggregations.isEmpty()) {
-            spec.setAggregations(aggregations);
-        }
-    }
-
     // ==================== 条件解析方法 ====================
 
-    private FieldCondition buildFieldCondition(Map<String, Object> pickedQuery, String key) {
+    public FieldCondition buildFieldCondition(Map<String, Object> pickedQuery, String key) {
         var value = buildValue(pickedQuery.get(key));
 
         var leftParts = StrUtil.split(key, NAME_SPLITTER);
-        var funcList = new ArrayList<>(leftParts).subList(1, leftParts.size());
-        var fieldName = StrUtil.toUnderlineCase(leftParts.get(0));
+        var fieldName = leftParts.get(0);
 
         FieldCondition cond = new FieldCondition();
-        cond.setField((fieldName));
-        cond.setFuncChain(funcList);
+        cond.setField(fieldName);
         cond.setValues(Arrays.asList(value));
 
         String lastPart = leftParts.getLast();
+        boolean isOperator = true;
 
         switch (lastPart) {
-            case "ne" -> cond.setOperator(FieldCondition.Operator.NE);
-            case "ge" -> cond.setOperator(FieldCondition.Operator.GE);
-            case "gt" -> cond.setOperator(FieldCondition.Operator.GT);
-            case "le" -> cond.setOperator(FieldCondition.Operator.LE);
-            case "lt" -> cond.setOperator(FieldCondition.Operator.LT);
-            case "in" -> cond.setOperator(FieldCondition.Operator.IN);
-            case "notIn" -> cond.setOperator(FieldCondition.Operator.NOT_IN);
-            case "between" -> cond.setOperator(FieldCondition.Operator.BETWEEN);
-            case "notBetween" -> cond.setOperator(FieldCondition.Operator.NOT_BETWEEN);
-            case "like" -> cond.setOperator(FieldCondition.Operator.LIKE);
-            case "notLike" -> cond.setOperator(FieldCondition.Operator.NOT_LIKE);
-            case "intersect" -> cond.setOperator(FieldCondition.Operator.INTERSECT);
-            default -> cond.setOperator(FieldCondition.Operator.EQ);
+            case "ne" -> cond.setOperator(FieldCondition.NE);
+            case "ge" -> cond.setOperator(FieldCondition.GE);
+            case "gt" -> cond.setOperator(FieldCondition.GT);
+            case "le" -> cond.setOperator(FieldCondition.LE);
+            case "lt" -> cond.setOperator(FieldCondition.LT);
+            case "in" -> cond.setOperator(FieldCondition.IN);
+            case "notIn" -> cond.setOperator(FieldCondition.NOT_IN);
+            case "between" -> cond.setOperator(FieldCondition.BETWEEN);
+            case "notBetween" -> cond.setOperator(FieldCondition.NOT_BETWEEN);
+            case "like" -> cond.setOperator(FieldCondition.LIKE);
+            case "notLike" -> cond.setOperator(FieldCondition.NOT_LIKE);
+            case "intersect" -> cond.setOperator(FieldCondition.INTERSECT);
+            default -> { cond.setOperator(FieldCondition.EQ); isOperator = false; }
+        }
+
+        // Exclude operator from funcChain; for EQ without explicit operator, keep all parts
+        if (isOperator && leftParts.size() > 1) {
+            cond.setFuncChain(new ArrayList<>(leftParts).subList(1, leftParts.size() - 1));
+        } else {
+            cond.setFuncChain(new ArrayList<>(leftParts).subList(1, leftParts.size()));
         }
 
         return cond;
@@ -304,7 +227,7 @@ public class SelectSpecBuilder {
 
             if (charAt == '(') {
                 char prev = i > 0 ? input.charAt(i - 1) : '\0';
-                String type = prev == '!' ? "or" : "and";
+                String type = prev == '!' ? LogicNode.OR : LogicNode.AND;
                 LogicNode node = new LogicNode();
                 node.type = type;
 
@@ -316,6 +239,7 @@ public class SelectSpecBuilder {
             } else if (charAt == ')') {
                 Set<String> all_child = new HashSet<>();
                 for (String key : current.str.split(",")) {
+                    if (key.isEmpty()) continue;
                     if (key.startsWith("?")) {
                         int index = Integer.parseInt(key.substring(1));
                         current.value.add(current.children.get(index));
@@ -324,8 +248,14 @@ public class SelectSpecBuilder {
                             all_child.addAll(child.allChild);
                         }
                     } else {
-                        all_child.add(key);
-                        current.value.add(key);
+                        int eqIdx = key.indexOf('=');
+                        if (eqIdx == -1) {
+                            throw new IllegalArgumentException("lg expression item must be in k=v format, got: " + key);
+                        }
+                        String k = key.substring(0, eqIdx);
+                        String v = key.substring(eqIdx + 1);
+                        all_child.add(k);
+                        current.value.add(new String[]{k, v});
                     }
                 }
                 current.allChild = new ArrayList<>(all_child);

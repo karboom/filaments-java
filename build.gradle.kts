@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "io.github.karboom"
-version = "1.1.16"
+version = "2.0.0"
 
 repositories {
     mavenCentral()
@@ -28,6 +28,8 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
     testImplementation("org.assertj:assertj-core:3.26.3")
     testImplementation("org.postgresql:postgresql:42.7.4")
 

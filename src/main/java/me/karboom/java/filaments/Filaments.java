@@ -1,25 +1,22 @@
-package me.karboom.java;
+package me.karboom.java.filaments;
 
 import am.ik.yavi.builder.ValidatorBuilder;
 import am.ik.yavi.core.ConstraintPredicates;
-import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.util.ArrayUtil;
-import cn.hutool.core.util.ObjectUtil;
-import cn.hutool.core.util.ReflectUtil;
+
 import cn.hutool.core.util.StrUtil;
 import com.esotericsoftware.reflectasm.FieldAccess;
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.JsonProcessingException;
+
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.SneakyThrows;
+import me.karboom.java.filaments.spec.FieldCondition;
+import me.karboom.java.filaments.spec.LogicNode;
+import me.karboom.java.filaments.spec.OrderSpec;
+import me.karboom.java.filaments.spec.SelectSpec;
 import org.jooq.*;
 import org.jooq.Record;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.util.*;
 import java.util.function.Consumer;
@@ -252,292 +249,128 @@ public abstract class Filaments<T> {
 
 
     // region 查询共用
+    protected final SelectSpecBuilder specBuilder = new SelectSpecBuilder();
+
     protected SelectQuery<Record> buildSelect(DSLContext db, Map<String, Object> query, SelectQuery<Record> sub) {
         SelectQuery<Record> q = db.selectQuery();
-
         q = this.buildSub(q, sub);
-        q = this.buildReturn(q, query);
 
-        q.addConditions(this.buildCondition(query));
-        q = this.buildOrder(q, query);
+        List<Condition> rawConditions = new ArrayList<>();
+        if (query.get("raw") instanceof Condition raw) {
+            rawConditions.add(raw);
+        }
 
+        var spec = specBuilder.parse(query, null);
 
+        buildSelectFieldsFromSpec(q, spec);
+        q.addConditions(buildConditionFromSpec(spec, rawConditions));
+        buildOrderFromSpec(q, spec);
+
+        if (spec.getLimit() != null) {
+            q.addLimit(spec.getLimit());
+            if (spec.getOffset() != null) {
+                q.addOffset(spec.getOffset());
+            }
+        }
 
         return q;
     }
+
     protected SelectQuery<Record> buildSub(SelectQuery<Record> q, SelectQuery<Record> sub) {
         if (sub != null) {
-            // Todo 这样写没问题？
             sub.addFrom(table(name(this.table)));
             q.addFrom(table(sub));
         } else {
-
             q.addFrom(table(name(this.table)));
         }
         return q;
     }
 
-    protected SelectQuery<Record> buildReturn(SelectQuery<Record> q, Map<String, Object> query) {
-        var rt = query.get("rt");
-
-        var list = new ArrayList<String>();
-        if (rt != null) {
-            switch (rt) {
-                case String s -> {
-                    list.addAll(StrUtil.split(s, ","));
-                }
-                case List l -> {
-                    list.addAll(l);
-                }
-                // Todo 更换报错类
-                default -> throw new IllegalStateException("Unexpected value: " + rt);
-            }
-
-            // 如果仅仅返回一个字段，数据转换会报错，暂时限制这种方式
-            if (list.size() == 1) throw new RuntimeException("至少返回两个字段");
-
-            for (String part : list) {
+    private void buildSelectFieldsFromSpec(SelectQuery<Record> q, SelectSpec spec) {
+        List<String> fields = spec.getSelectFields();
+        if (fields != null && !fields.isEmpty()) {
+            if (fields.size() == 1) throw new RuntimeException("至少返回两个字段");
+            for (String part : fields) {
                 q.addSelect(field(name(StrUtil.toUnderlineCase(part))));
             }
         } else {
             q.addSelect();
         }
-
-
-        return q;
     }
 
-    protected SelectQuery<Record> buildOrder(SelectQuery<Record> q, Map<String, ?> query) {
-        var od = query.get("od");
-
-        var list = new ArrayList<String>();
-
-        switch (od) {
-            case String s -> {
-                list.addAll(StrUtil.split(s, ","));
-            }
-            case List l -> {
-                list.addAll(l);
-            }
-            case null -> {}
-            // Todo 更换报错类
-            default -> throw new IllegalStateException("Unexpected value: " + od);
-        }
-
-
-
-        for (String part : list) {
-            part = StrUtil.toUnderlineCase(part);
-
-            if (part.startsWith("-")) {
-                q.addOrderBy(field(part.substring(1)).desc());
-            } else {
-                q.addOrderBy(field(part).asc());
-            }
-        }
-
-
-        return q;
-    }
-
-
-
-    public LogicTreeNode parseLogic(String input) {
-        if (input.equals("!")) {
-            input = "!()";
-        }
-
-        LogicTreeNode root = new LogicTreeNode();
-        LogicTreeNode current = root;
-        Stack<LogicTreeNode> stack = new Stack<>();
-        stack.push(root);
-
-        for (int i = 0; i < input.length(); i++) {
-            char charAt = input.charAt(i);
-
-            if (charAt == '(') {
-                char prev = i > 0 ? input.charAt(i - 1) : '\0';
-                String type = prev == '!' ? "or" : "and";
-                LogicTreeNode node = new LogicTreeNode();
-                node.type = type;
-
-                current.children.add(node);
-                current.str += "?" + (current.children.size() - 1);
-
-                stack.push(node);
-                current = node;
-            } else if (charAt == ')') {
-                Set<String> all_child = new HashSet<>();
-                for (String key : current.str.split(",")) {
-                    if (key.startsWith("?")) {
-                        int index = Integer.parseInt(key.substring(1));
-                        current.value.add(current.children.get(index));
-
-                        for (LogicTreeNode child : current.children) {
-                            all_child.addAll(child.allChild);
-                        }
-                    } else {
-                        all_child.add(key);
-                        current.value.add(key);
-                    }
-                }
-                current.allChild = new ArrayList<>(all_child);
-
-                stack.pop();
-                current = stack.peek();
-            } else {
-                if (charAt != '!') {
-                    current.str += charAt;
+    private void buildOrderFromSpec(SelectQuery<Record> q, SelectSpec spec) {
+        List<OrderSpec> orderBy = spec.getOrderBy();
+        if (orderBy != null) {
+            for (OrderSpec os : orderBy) {
+                if (OrderSpec.DESC.equals(os.getDirection())) {
+                    q.addOrderBy(field(os.getField()).desc());
+                } else {
+                    q.addOrderBy(field(os.getField()).asc());
                 }
             }
         }
-
-        return root.children.isEmpty() ? root : root.children.get(0);
     }
 
-    public String buildHolder(Object[] value, String splitter) {
-        return Stream.of(value)
-                .map(_ -> "?")
-                .collect(Collectors.joining(" " + splitter + " "));
-    }
-
-    public Object[] buildValue(Object value) {
-        switch (value) {
-            case List<?> l -> {
-                return l.toArray();
-            }
-            case String s -> {
-                return StrUtil.split(s, ",").toArray();
-            }
-            case Set<?> s -> {
-                return s.toArray();
-            }
-            // 空数组类型的条件直接过滤？
-            // Todo 兼容ObjectNode
-            default -> {
-                return new Object[]{value};
-            }
+    protected Condition buildConditionFromSpec(SelectSpec spec, List<Condition> rawConditions) {
+        Condition c = noCondition();
+        LogicNode where = spec.getWhere();
+        if (where != null && !where.getValue().isEmpty()) {
+            c = buildConditionFromLogicNode(where);
         }
-    }
-
-    public String buildFuncChain(String sqlField, List<String> parts) {
-        for (String func : parts) {
-            List<String> paramList = new ArrayList<>();
-            if (func.contains("(")) {
-                int startIndex = func.indexOf('(') + 1;
-                int endIndex = func.indexOf(')');
-                if (startIndex < endIndex) {
-                    paramList = List.of(func.substring(startIndex, endIndex).split(","));
-                }
-                func = func.substring(0, func.indexOf('('));
-                // Todo 数据类型问题
-                // Todo 参数安全问题
-            }
-
-            String paramStr = paramList.isEmpty() ? "" : ", " + String.join(",", paramList);
-            sqlField = funcNameSafe(func) + "(" + sqlField + paramStr + ")";
+        for (Condition raw : rawConditions) {
+            c = c.and(raw);
         }
-
-        return sqlField;
+        return c;
     }
 
-    public Condition buildField(Map<String, Object> pickedQuery, String whereType) {
+    private Condition buildConditionFromLogicNode(LogicNode node) {
         Condition condition = noCondition();
-
-        for (String key : pickedQuery.keySet()) {
-            if (key.equals("raw")) {
-                condition = whereType.equals("and") ? condition.and((Condition) pickedQuery.get(key)) : condition.or((Condition) pickedQuery.get(key));
+        for (Object item : node.getValue()) {
+            Condition subCond;
+            if (item instanceof LogicNode childNode) {
+                subCond = buildConditionFromLogicNode(childNode);
+            } else if (item instanceof FieldCondition fc) {
+                subCond = buildConditionFromFieldCondition(fc);
+            } else {
                 continue;
             }
-
-            var value = buildValue(pickedQuery.get(key));
-
-            var leftParts = StrUtil.split(key, Filaments.NAME_SPLITTER);
-            var funcList = new ArrayList<>(leftParts).subList(1, leftParts.size());
-            var funcListShort = new ArrayList<>(leftParts).subList(1, leftParts.size() > 1 ? leftParts.size() -1 : 1);
-            var fieldName = StrUtil.toUnderlineCase(leftParts.get(0));
-
-
-            var sqlField = name(fieldNameSafe(fieldName)).toString();
-            if (fieldName.contains(".")) {
-                // Todo 区分pg和mysql，暂时只有pg的
-                var segments = StrUtil.split(fieldName, '.');
-
-                sqlField = "%s #>> '{%s}'".formatted(segments.get(0), String.join(",", segments.subList(1, segments.size()) ));
-            }
-            if (fieldName.contains("[")) {
-
-            }
-
-
-            Condition subCond = switch (leftParts.getLast()) {
-                case "ne" -> condition(String.format("%s <> ?", buildFuncChain(sqlField, funcListShort)), value);
-                case "ge" -> condition(String.format("%s >= ?", buildFuncChain(sqlField, funcListShort)), value);
-                case "gt" -> condition(String.format("%s > ?", buildFuncChain(sqlField, funcListShort)), value);
-                case "le" -> condition(String.format("%s <= ?", buildFuncChain(sqlField, funcListShort)), value);
-                case "lt" -> condition(String.format("%s < ?", buildFuncChain(sqlField, funcListShort)), value);
-                case "in" -> condition(String.format("%s in (%s)", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
-                case "notIn" -> condition(String.format("%s not in (%s)", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
-                case "between" -> condition(String.format("%s between (%s)", buildFuncChain(sqlField, funcListShort), buildHolder(value, "and")), value);
-                case "notBetween" -> condition(String.format("%s not between (%s)", buildFuncChain(sqlField, funcListShort), buildHolder(value, "and")), value);
-                case "like" -> condition(String.format("%s like %s", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
-                case "notLike" -> condition(String.format("%s not like %s", buildFuncChain(sqlField, funcListShort), buildHolder(value, ",")), value);
-
-                // Todo临时支持pg
-                case "intersect" -> {
-                    // Todo 安全问题？
-                    var jsonCond = Stream.of(value).map(v -> "@ == \"%s\"".formatted(v)).collect(Collectors.joining(" || "));
-                    var str = "jsonb_path_exists(%s, '$[*] ? (%s)')".formatted(sqlField, jsonCond);
-                    yield condition(str, value);
-                }
-
-                default -> condition(String.format("%s = ?", buildFuncChain(sqlField, funcList)), value);
-            };
-
-            condition = whereType.equals("and") ? condition.and(subCond) : condition.or(subCond);
+            condition = LogicNode.AND.equals(node.getType()) ? condition.and(subCond) : condition.or(subCond);
         }
-
-        return condition;
-    }
-    private Condition buildTree( Map<String, Object> query, LogicTreeNode node) {
-        Condition condition = noCondition();
-
-        for (var child: node.value) {
-            Condition subCond;
-            if (child instanceof LogicTreeNode) {
-                subCond = buildTree(query, (LogicTreeNode) child);
-            } else {
-                var pickedQuery = new HashMap<>(query);
-                pickedQuery.keySet().retainAll(List.of(child));
-                subCond = buildField(pickedQuery, node.type);
-            }
-
-            condition = node.type.equals("and") ? condition.and(subCond) : condition.or(subCond);
-        }
-
-
         return condition;
     }
 
-    protected Condition buildCondition(Map<String, Object> query) {
-        Iterator<String> it = query.keySet().iterator();
+    protected Condition buildConditionFromFieldCondition(FieldCondition fc) {
+        var value = fc.getValues().toArray();
+        var fieldName = fc.getField();
 
-        var filteredQuery = new HashMap<>(query);
-        filteredQuery.keySet().removeAll(List.of("p", "pc", "od", "rt", "gp", "pg", "lg", "raw"));
-
-        var logicTree = new LogicTreeNode();
-        var lg = (String) query.get("lg");
-        if (lg != null) {
-            logicTree = parseLogic(lg);
+        var sqlField = name(fieldNameSafe(fieldName)).toString();
+        if (fieldName.contains(".")) {
+            var segments = StrUtil.split(fieldName, '.');
+            sqlField = "%s #>> '{%s}'".formatted(segments.get(0), String.join(",", segments.subList(1, segments.size())));
         }
 
-        var logicTreeDefaultValue = new HashMap<>(filteredQuery);
-        logicTreeDefaultValue.keySet().removeAll(logicTree.allChild);
-        logicTree.value.addAll(logicTreeDefaultValue.keySet());
+        String funcChainResult = specBuilder.buildFuncChain(sqlField, fc.getFuncChain());
 
-        var condition = buildTree(filteredQuery, logicTree);
-
-        return condition;
+        return switch (fc.getOperator()) {
+            case FieldCondition.NE -> condition(String.format("%s <> ?", funcChainResult), value);
+            case FieldCondition.GE -> condition(String.format("%s >= ?", funcChainResult), value);
+            case FieldCondition.GT -> condition(String.format("%s > ?", funcChainResult), value);
+            case FieldCondition.LE -> condition(String.format("%s <= ?", funcChainResult), value);
+            case FieldCondition.LT -> condition(String.format("%s < ?", funcChainResult), value);
+            case FieldCondition.IN -> condition(String.format("%s in (%s)", funcChainResult, specBuilder.buildHolder(value, ",")), value);
+            case FieldCondition.NOT_IN -> condition(String.format("%s not in (%s)", funcChainResult, specBuilder.buildHolder(value, ",")), value);
+            case FieldCondition.BETWEEN -> condition(String.format("%s between (%s)", funcChainResult, specBuilder.buildHolder(value, "and")), value);
+            case FieldCondition.NOT_BETWEEN -> condition(String.format("%s not between (%s)", funcChainResult, specBuilder.buildHolder(value, "and")), value);
+            case FieldCondition.LIKE -> condition(String.format("%s like %s", funcChainResult, specBuilder.buildHolder(value, ",")), value);
+            case FieldCondition.NOT_LIKE -> condition(String.format("%s not like %s", funcChainResult, specBuilder.buildHolder(value, ",")), value);
+            case FieldCondition.INTERSECT -> {
+                var jsonCond = Stream.of(value).map(v -> "@ == \"%s\"".formatted(v)).collect(Collectors.joining(" || "));
+                var str = "jsonb_path_exists(%s, '$[*] ? (%s)')".formatted(sqlField, jsonCond);
+                yield condition(str, value);
+            }
+            case FieldCondition.EQ -> condition(String.format("%s = ?", funcChainResult), value);
+            default -> throw new IllegalStateException("Unknown operator: " + fc.getOperator());
+        };
     }
 
 
@@ -578,18 +411,6 @@ public abstract class Filaments<T> {
      */
     public List<T> get(DSLContext db, Map<String, Object> query) {
         SelectQuery<Record> q = this.buildSelect(db, query, null);
-
-        if (query.containsKey("pc")) {
-            var pc = Integer.parseInt(query.get("pc").toString());
-            q.addLimit(pc);
-
-            // 页码参数不会单独存在
-            if (query.containsKey("p")) {
-                var p = Integer.parseInt(query.get("p").toString());
-                q.addOffset((p - 1) * pc);
-            }
-        }
-
         return this.doQuery(q, false);
     }
 
@@ -668,7 +489,7 @@ public abstract class Filaments<T> {
         }
 
         for (var func: target.keySet()) {
-            var value = buildValue(target.get(func));
+            var value = specBuilder.buildValue(target.get(func));
 
             for (var f: value) {
                 var fieldName = fieldNameSafe((String) f);
@@ -704,13 +525,5 @@ public abstract class Filaments<T> {
         public Error(String message) {
             super(message);
         }
-    }
-
-    static class LogicTreeNode {
-        public String type = "and";
-        public List<Object> value = new ArrayList<>();
-        public String str = "";
-        public List<String> allChild = new ArrayList<>();
-        public List<LogicTreeNode> children = new ArrayList<>();
     }
 }
