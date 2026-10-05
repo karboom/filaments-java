@@ -208,7 +208,7 @@ public abstract class Filaments<T> {
     // region 删除
     public void deleteByIds(DSLContext db, List<String> ids) {
         DeleteQuery<Record> q = db.deleteQuery(table(this.table));
-        q.addConditions(trueCondition().and(field("id").in(ids)));
+        q.addConditions(trueCondition().and(field(name(this.pk)).in(ids)));
         q.execute();
     }
 
@@ -237,7 +237,7 @@ public abstract class Filaments<T> {
                 q.addValue(field(name(StrUtil.toUnderlineCase(name))), value);
             }
         }
-        q.addConditions(trueCondition().and(field(name("id")).in(ids)));
+        q.addConditions(trueCondition().and(field(name(this.pk)).in(ids)));
 
         q.execute();
     }
@@ -432,11 +432,11 @@ public abstract class Filaments<T> {
             copyQuery.remove("rt");
             copyQuery.remove("od");
 
-            var count = this.aggregation(db, new HashMap<>(){{
-                put("count", "id");
-            }}, copyQuery, List.of(), null);
+            var count = this.aggregation(db, Map.of("count", this.pk), copyQuery, List.of(), null);
 
-            res.total = Integer.valueOf(count.getFirst().get("countId").toString());
+            // 与 aggregation 中的别名规则保持一致: count(字段) -> countXxx
+            var countKey = StrUtil.toCamelCase(String.format("count_%s", this.pk));
+            res.total = Integer.valueOf(count.getFirst().get(countKey).toString());
         }
 
 
