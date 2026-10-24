@@ -248,4 +248,55 @@ INSERT INTO "%s" (id, name, wechat_id, type, roles, extra, create_time, location
 
         assertThat(newObj.name).isEqualTo("N");
     }
+
+    public static class Mini {
+        public String uid;
+        public String name;
+
+        public Mini() {}
+
+        public Mini(String uid, String name) {
+            this.uid = uid;
+            this.name = name;
+        }
+
+        public String getUid() { return uid; }
+        public void setUid(String uid) { this.uid = uid; }
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+    }
+
+    @SneakyThrows
+    @Test
+    void customPk() {
+        var t = "user_mini_pk";
+        db.execute("DROP TABLE IF EXISTS \"" + t + "\"");
+        db.execute("CREATE TABLE \"" + t + "\" (uid BIGINT PRIMARY KEY, name VARCHAR(255) NOT NULL)");
+
+        var f = new Filaments<Mini>(t) {
+            { pk = "uid"; }
+
+            @Override
+            public ValidatorBuilder<Mini> initValidator() {
+                return ValidatorBuilder.<Mini>of()
+                        .constraint(Mini::getUid, "uid", c -> c.notNull());
+            }
+        };
+
+        f.create(db, new Mini("100", "A"));
+
+        // update：where 走自定义主键，且传入对象携带的主键值不参与 SET
+        f.updateByIds(db, "100", new Mini("101", "B"));
+        var got = f.getByIds(db, "100");
+        assertThat(got).isNotNull();
+        assertThat(got.uid).isEqualTo("100");
+        assertThat(got.name).isEqualTo("B");
+        assertThat(f.getByIds(db, "101")).isNull();
+
+        // delete：where 走自定义主键
+        f.deleteByIds(db, "100");
+        assertThat(f.getByIds(db, "100")).isNull();
+
+        db.execute("DROP TABLE IF EXISTS \"" + t + "\"");
+    }
 }

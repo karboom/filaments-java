@@ -1,27 +1,29 @@
 import com.vanniktech.maven.publish.SonatypeHost
 
 plugins {
-    id("java")
+    id("java-library")
     id("com.vanniktech.maven.publish") version "0.30.0"
 }
 
 group = "io.github.karboom"
-version = "2.0.0"
+version = "2.0.1"
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    implementation("org.jooq:jooq:3.19.15")
+    // 出现在公开 API 签名中，下游编译需要 -> api
+    api("org.jooq:jooq:3.19.15")
+    api("com.fasterxml.jackson.core:jackson-databind:2.17.2")
+    api("am.ik.yavi:yavi:0.14.1")
+
     implementation("cn.hutool:hutool-all:5.8.33")
-    implementation("com.esotericsoftware:reflectasm:1.11.9")
-    implementation("am.ik.yavi:yavi:0.14.1")
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")
+    // 仅运行时使用（静态初始化 java.time 支持），不暴露给下游编译
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.2")
+    // 内部字段访问，不出现在公开签名
+    implementation("com.esotericsoftware:reflectasm:1.11.9")
     implementation("net.postgis:postgis-jdbc:2.5.1")
-    implementation("net.bytebuddy:byte-buddy:1.12.18")
-    implementation("net.bytebuddy:byte-buddy-agent:1.12.18")
 
     compileOnly("org.projectlombok:lombok:1.18.36")
     annotationProcessor("org.projectlombok:lombok:1.18.36")

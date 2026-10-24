@@ -23,7 +23,7 @@
 
 ```gradle
 dependencies {
-    implementation 'me.karboom.java:filaments:1.1.16'
+    implementation 'io.github.karboom:filaments-java:2.0.1'
 }
 ```
 
@@ -31,9 +31,9 @@ dependencies {
 
 ```xml
 <dependency>
-    <groupId>me.karboom.java</groupId>
-    <artifactId>filaments</artifactId>
-    <version>1.1.16</version>
+    <groupId>io.github.karboom</groupId>
+    <artifactId>filaments-java</artifactId>
+    <version>2.0.1</version>
 </dependency>
 ```
 

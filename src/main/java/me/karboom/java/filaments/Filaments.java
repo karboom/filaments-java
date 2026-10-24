@@ -207,7 +207,7 @@ public abstract class Filaments<T> {
 
     // region 删除
     public void deleteByIds(DSLContext db, List<String> ids) {
-        DeleteQuery<Record> q = db.deleteQuery(table(this.table));
+        DeleteQuery<Record> q = db.deleteQuery(table(name(this.table)));
         q.addConditions(trueCondition().and(field(name(this.pk)).in(ids)));
         q.execute();
     }
@@ -227,10 +227,14 @@ public abstract class Filaments<T> {
         for (var field : fields) {
             field.setAccessible(true);
             String name = field.getName();
+
+            // 主键不参与更新，避免批量更新时 SET 主键导致冲突
+            if (StrUtil.toUnderlineCase(name).equals(StrUtil.toUnderlineCase(this.pk))) {
+                continue;
+            }
+
             var value = access.get(data, field.getName());
 
-
-            // Todo 是否考虑直接把主键字段屏蔽掉
             if (value != null) {
                 value = handleJson(value);
 
