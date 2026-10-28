@@ -23,6 +23,10 @@
   </a>
 </p>
 
+<p align="center">
+  <a href="README.en.md">English</a> · <a href="README.md">简体中文</a>
+</p>
+
 一个轻量级的 Java ORM 库，提供了一组语法可以将查询字符串直接转换为 SQL 查询。它的接口是**为自然语言而生的**：查询条件就是「字段|函数|操作符=值」这样的短字符串，与人类描述需求的语序几乎一一对应，因此也非常适合作为 **AI / LLM 生成代码（vibe coding）的数据层目标库**。
 
 ## 特性
@@ -74,7 +78,7 @@
 
 ```gradle
 dependencies {
-    implementation 'io.github.karboom:filaments-java:2.0.1'
+    implementation 'io.github.karboom:filaments-java:2.0.2'
 }
 ```
 
@@ -84,7 +88,7 @@ dependencies {
 <dependency>
     <groupId>io.github.karboom</groupId>
     <artifactId>filaments-java</artifactId>
-    <version>2.0.1</version>
+    <version>2.0.2</version>
 </dependency>
 ```
 

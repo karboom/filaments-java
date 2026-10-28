@@ -1,12 +1,12 @@
-import com.vanniktech.maven.publish.SonatypeHost
+import com.vanniktech.maven.publish.DeploymentValidation
 
 plugins {
     id("java-library")
-    id("com.vanniktech.maven.publish") version "0.30.0"
+    id("com.vanniktech.maven.publish") version "0.37.0"
 }
 
 group = "io.github.karboom"
-version = "2.0.1"
+version = "2.0.2"
 
 repositories {
     mavenCentral()
@@ -14,38 +14,34 @@ repositories {
 
 dependencies {
     // 出现在公开 API 签名中，下游编译需要 -> api
-    api("org.jooq:jooq:3.19.15")
-    api("com.fasterxml.jackson.core:jackson-databind:2.17.2")
-    api("am.ik.yavi:yavi:0.14.1")
+    api("org.jooq:jooq:3.21.9")
+    api("tools.jackson.core:jackson-databind:3.2.4")
+    api("am.ik.yavi:yavi:0.17.2")
 
-    implementation("cn.hutool:hutool-all:5.8.33")
-    // 仅运行时使用（静态初始化 java.time 支持），不暴露给下游编译
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.2")
+    implementation("cn.hutool:hutool-all:5.8.48")
     // 内部字段访问，不出现在公开签名
     implementation("com.esotericsoftware:reflectasm:1.11.9")
-    implementation("net.postgis:postgis-jdbc:2.5.1")
+    implementation("net.postgis:postgis-jdbc:2025.1.1")
 
-    compileOnly("org.projectlombok:lombok:1.18.36")
-    annotationProcessor("org.projectlombok:lombok:1.18.36")
+    compileOnly("org.projectlombok:lombok:1.18.48")
+    annotationProcessor("org.projectlombok:lombok:1.18.48")
 
-    testImplementation(platform("org.junit:junit-bom:5.10.0"))
+    testImplementation(platform("org.junit:junit-bom:5.14.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
-    testImplementation("org.assertj:assertj-core:3.26.3")
-    testImplementation("org.postgresql:postgresql:42.7.4")
+    testImplementation("org.assertj:assertj-core:3.27.7")
+    testImplementation("org.postgresql:postgresql:42.7.14")
 
-    testCompileOnly("org.projectlombok:lombok:1.18.36")
-    testAnnotationProcessor("org.projectlombok:lombok:1.18.36")
+    testCompileOnly("org.projectlombok:lombok:1.18.48")
+    testAnnotationProcessor("org.projectlombok:lombok:1.18.48")
 }
 
 
 mavenPublishing {
-//    publishToMavenCentral(SonatypeHost.DEFAULT)
-//    // or when publishing to https://s01.oss.sonatype.org
-//    publishToMavenCentral(SonatypeHost.S01)
-//    // or when publishing to https://central.sonatype.com/
-    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    // 0.37 起 SonatypeHost 移除，仅保留 Central Portal 链路
+    // 参数：automaticRelease, 发布后校验级别（NONE/VALIDATED/PUBLISHED）
+    publishToMavenCentral(true, DeploymentValidation.VALIDATED)
 
 //    configure(JavaLibrary(
 //        // configures the -javadoc artifact, possible values:

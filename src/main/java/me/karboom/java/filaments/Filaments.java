@@ -6,9 +6,10 @@ import am.ik.yavi.core.ConstraintPredicates;
 import cn.hutool.core.util.StrUtil;
 import com.esotericsoftware.reflectasm.FieldAccess;
 
-import com.fasterxml.jackson.databind.*;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import tools.jackson.databind.*;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ArrayNode;
 import lombok.SneakyThrows;
 import me.karboom.java.filaments.spec.FieldCondition;
 import me.karboom.java.filaments.spec.LogicNode;
@@ -39,17 +40,12 @@ public abstract class Filaments<T> {
     // 这个mapper用来处理json嵌套对象的转换
     public static ObjectMapper mapper;
     static {
-        mapper = new ObjectMapper();
-        // Todo JSON 里面的null如何处理？
-        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-//        mapper.configure(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN, true);
-        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        mapper.configure(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE, false);
-        mapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
-
-        JavaTimeModule javaTimeModule = new JavaTimeModule();
-
-        mapper.registerModule(javaTimeModule);
+        // Jackson 3: 未知属性忽略、空 bean 不报错均为默认行为；java.time 支持已内置，无需 jsr310 模块
+        mapper = JsonMapper.builder()
+                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+                // Jackson 3 默认会把带 offset 的时间调到上下文时区，保持原行为：保留原始 offset
+                .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+                .build();
     }
 
     private final Class<T> dataClass;
@@ -391,10 +387,8 @@ public abstract class Filaments<T> {
         // 为了兼容PG数据库指定返回字段的时候，json类型无法被正确识别
         var arrayNode = mapper.readValue(json, ArrayNode.class);
         for (var obj : arrayNode) {
-            var it = obj.fields();
-            while (it.hasNext()) {
-                var field = it.next();
-                var value = field.getValue().asText();
+            for (var field : obj.properties()) {
+                var value = field.getValue().asString();
                 if (value.startsWith("{") || value.startsWith("[")) {
                     field.setValue(mapper.readValue(value.toString(), JsonNode.class));
                 }
