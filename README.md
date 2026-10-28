@@ -1,17 +1,68 @@
-# Filaments Java
+<h1 align="center">Filaments Java</h1>
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Java Version](https://img.shields.io/badge/java-22%2B-blue.svg)](https://www.oracle.com/java/technologies/javase-downloads.html)
+<p align="center">
+  <i>为自然语言与 vibe coding 而生的轻量 Java ORM</i>
+</p>
 
-一个轻量级的 Java ORM 库，提供了一组语法可以将查询字符串直接转换为 SQL 查询，并且提供了一组 NLP 友好的数据操作接口。
+<p align="center">
+  <a href="https://central.sonatype.com/artifact/io.github.karboom/filaments-java">
+    <img src="https://img.shields.io/maven-central/v/io.github.karboom/filaments-java?label=Maven%20Central&logo=apachemaven&logoColor=white" alt="Maven Central">
+  </a>
+  <a href="https://javadoc.io/doc/io.github.karboom/filaments-java">
+    <img src="https://img.shields.io/badge/javadoc-available-blueviolet?logo=readthedocs&logoColor=white" alt="Javadoc">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache&logoColor=white" alt="Apache-2.0 License">
+  </a>
+  <img src="https://img.shields.io/badge/Java-22%2B-orange?logo=openjdk&logoColor=white" alt="Java 22+">
+  <a href="https://github.com/karboom/filaments-java">
+    <img src="https://img.shields.io/github/stars/karboom/filaments-java?style=flat&logo=github&label=Stars" alt="Stars">
+  </a>
+  <a href="https://github.com/karboom/filaments-java/compare">
+    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?logo=contribute&logoColor=white" alt="PRs Welcome">
+  </a>
+</p>
+
+一个轻量级的 Java ORM 库，提供了一组语法可以将查询字符串直接转换为 SQL 查询。它的接口是**为自然语言而生的**：查询条件就是「字段|函数|操作符=值」这样的短字符串，与人类描述需求的语序几乎一一对应，因此也非常适合作为 **AI / LLM 生成代码（vibe coding）的数据层目标库**。
 
 ## 特性
 
 - 🔄 将查询字符串自动转换为 SQL 查询
 - 🔍 支持丰富的查询操作符和函数
+- 🗣️ 自然语言友好：查询 DSL 即字符串，LLM 无需理解复杂 builder API 即可准确生成
+- 🤖 Vibe coding 适配：统一的方法签名 + 约定式字段映射，AI 一次对话即可完成数据访问层
 - 📦 易于集成到现有项目中
 - ⚡ 高性能的数据访问层
 - 🛠️ 灵活的扩展机制
+
+## 为什么对自然语言 / Vibe Coding 友好
+
+传统 ORM 让 LLM 写查询时，需要它精确记忆大量 builder API、类型和链接调用；任何一处拼错都会编译失败。Filaments 把查询收敛成**一种高度规律、可自然表达的字符串语法**：
+
+1. **需求到查询几乎零翻译成本**
+   "查询年龄大于 18 的北京用户，按注册时间倒序" 直接映射为：
+
+   ```java
+   filaments.pages(db, new HashMap<>() {{
+       put("age|gt", 18);
+       put("city", "北京");
+       put("od", "-create_time");
+   }});
+   ```
+
+   `字段|操作符=值` 与中文/英文的描述语序同构（字段→条件→值），LLM 最容易学会的就是这种模式化短字符串，出错率显著低于链式 API。
+
+2. **参数是纯数据（Map / String），不是代码**
+   查询条件可以由 LLM 以 JSON 形式输出再直接传入，天然适合 Function Calling / Tool 参数场景，也便于服务端做校验与回放。复杂逻辑树用 `lg` 表达式（如 `!(a=1,b=2)`）描述，且提供 `toTreeString()` 树形打印，AI 生成后可视化自检。
+
+3. **强约定，弱配置**
+   驼峰字段自动转下划线列名、JSON 列自动序列化、`p/pc/pg` 分页、`rt` 指定返回字段——LLM 不需要生成任何映射配置或样板代码，命名约定本身即是"提示词"。
+
+4. **接口面极小，一次对话即可上手**
+   核心入口只有 `create / updateByIds / deleteByIds / get / pages / getByIds / aggregation` 几个方法，第一个参数统一是 `DSLContext`。AI 只需少量示例（few-shot）即可覆盖整个库的用法，生成的代码风格高度一致、可预测。
+
+5. **安全边界清晰**
+   所有值走占位符绑定，注入面收敛在字段名/函数白名单内，LLM 生成的查询不会引入拼接式 SQL 注入风险，适合作为"让 AI 直接操作数据查询"的落地层。
 
 ## 快速开始
 
@@ -147,3 +198,7 @@ public class UserFilaments extends Filaments<User> {
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request！
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).

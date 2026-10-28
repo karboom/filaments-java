@@ -63,14 +63,14 @@ mavenPublishing {
 
     pom {
         name.set("filaments")
-        description.set("")
+        description.set("一个轻量级的 Java ORM 库，提供了一组语法可以将查询字符串直接转换为 SQL 查询，并且提供了一组 NLP 友好的数据操作接口")
         inceptionYear.set("2024")
         url.set("https://github.com/karboom/filaments-java")
         licenses {
             license {
-                name.set("MIT License")
-                url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
-                distribution.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
+                name.set("Apache License, Version 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                distribution.set("repo")
             }
         }
         developers {
