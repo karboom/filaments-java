@@ -23,10 +23,6 @@
   </a>
 </p>
 
-<p align="center">
-  <a href="README.en.md">English</a> · <a href="README.md">简体中文</a>
-</p>
-
 一个轻量级的 Java ORM 库，提供了一组语法可以将查询字符串直接转换为 SQL 查询。它的接口是**为自然语言而生的**：查询条件就是「字段|函数|操作符=值」这样的短字符串，与人类描述需求的语序几乎一一对应，因此也非常适合作为 **AI / LLM 生成代码（vibe coding）的数据层目标库**。
 
 ## 特性
@@ -78,7 +74,7 @@
 
 ```gradle
 dependencies {
-    implementation 'io.github.karboom:filaments-java:2.0.2'
+    implementation 'io.github.karboom:filaments-java:2.0.1'
 }
 ```
 
@@ -88,7 +84,7 @@ dependencies {
 <dependency>
     <groupId>io.github.karboom</groupId>
     <artifactId>filaments-java</artifactId>
-    <version>2.0.2</version>
+    <version>2.0.1</version>
 </dependency>
 ```
 
@@ -113,25 +109,26 @@ var page = userFilament.pages(db, new HashMap(){{
 
 ### 保留关键字
 
-| 字段名称 | 功能                    | 默认值  | 查询字符串                                             | 对应SQL                                                             |
-|------|-----------------------|------|---------------------------------------------------|-------------------------------------------------------------------|
-| rt   | 指定返回字段                | *    | ?rt=name,age                                      | ```select `name`, `age` ```                                       |
-| p    | 指定当前页码                | 1    | ?p=3                                              | ```limit 20 offset 40```                                          |
-| pc   | 指定页内行数                | 20   | ?pc=18                                            | ```limit 18 offset 0```                                           |
-| od   | 指定排序规则                | Null | ?id,-height                                       | ``` order by `id` asc, `height` desc```                           |
-| pg   | 是否需要计算分页(仅分页函数生效)     | 0    | ?pg=1                                             | ``` limit ? offset ? ```                                          |
+| 字段名称 | 功能                             | 默认值 | 查询字符串   | 对应SQL                                 |
+| -------- | -------------------------------- | ------ | ------------ | --------------------------------------- |
+| rt       | 指定返回字段                     | *      | ?rt=name,age | ```select `name`, `age` ```             |
+| p        | 指定当前页码                     | 1      | ?p=3         | ```limit 20 offset 40```                |
+| pc       | 指定页内行数                     | 20     | ?pc=18       | ```limit 18 offset 0```                 |
+| od       | 指定排序规则                     | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
+| pg       | 是否需要计算分页(仅分页函数生效) | 0      | ?pg=1        | ``` limit ? offset ? ```                |
 
 ### 字段表达式
 
 #### 格式
+
 ```
 字段名|函数(参数)...|操作符=数值
 ```
 
 #### 示例
 
-| 查询字符串                                             | 对应SQL                                                       |
-|---------------------------------------------------|-------------------------------------------------------------|
+| 查询字符串                                        | 对应SQL                                                     |
+| ------------------------------------------------- | ----------------------------------------------------------- |
 | ?type=dog                                         | ``` where `type` = 'dog' ```                                |
 | ?type&#124;in=dog,cat                             | ``` where `type` in ( 'dog', 'cat') ```                     |
 | ?type&#124;substr(1,2)&#124;in=dog,cat            | ``` where substr(`type`, 1, 2) in ( 'dog', 'cat')```        |
@@ -142,20 +139,20 @@ var page = userFilament.pages(db, new HashMap(){{
 
 ### 操作符
 
-| 查询字符串                    | 别名  | 对应SQL                                   |
-|--------------------------|-----|-----------------------------------------|
-| ?id&#124;gt=1            |     | ```  where `id` > 1 ```                 | 
-| ?id&#124;ge=1            |     | ```  where `id` >= 1 ```                | 
-| ?id&#124;lt=1            |     | ```  where `id` < 1 ```                 | 
-| ?id&#124;le=1            |     | ```  where `id` <= 1 ```                | 
-| ?id&#124;in=1            |     | ```  where `id` in (1) ```              | 
-| ?id&#124;not_in=1        | nin | ```  where `id` not in (1) ```          | 
-| ?id&#124;between=1,2     | bt  | ```  where `id` between 1 and 2 ```     | 
-| ?id&#124;not_between=1,2 | nbt | ```  where `id` not between 1 and 2 ``` | 
-| ?id&#124;like=k%         | lk  | ```  where `id` like 'k%' ```           | 
-| ?id&#124;not_like=k%     | nlk | ```  where `id` not like 'k%' ```       |
-| ?id&#124;is_null=1       | nl  | ```  where `id` is null ```             |
-| ?id&#124;is_not_null=1   | nnl | ```  where `id` is not null ```         |
+| 查询字符串               | 别名 | 对应SQL                                 |
+| ------------------------ | ---- | --------------------------------------- |
+| ?id&#124;gt=1            |      | ```  where `id` > 1 ```                 |
+| ?id&#124;ge=1            |      | ```  where `id` >= 1 ```                |
+| ?id&#124;lt=1            |      | ```  where `id` < 1 ```                 |
+| ?id&#124;le=1            |      | ```  where `id` <= 1 ```                |
+| ?id&#124;in=1            |      | ```  where `id` in (1) ```              |
+| ?id&#124;not_in=1        | nin  | ```  where `id` not in (1) ```          |
+| ?id&#124;between=1,2     | bt   | ```  where `id` between 1 and 2 ```     |
+| ?id&#124;not_between=1,2 | nbt  | ```  where `id` not between 1 and 2 ``` |
+| ?id&#124;like=k%         | lk   | ```  where `id` like 'k%' ```           |
+| ?id&#124;not_like=k%     | nlk  | ```  where `id` not like 'k%' ```       |
+| ?id&#124;is_null=1       | nl   | ```  where `id` is null ```             |
+| ?id&#124;is_not_null=1   | nnl  | ```  where `id` is not null ```         |
 
 ## 高级用法
 

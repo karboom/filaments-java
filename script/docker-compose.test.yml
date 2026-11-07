@@ -1,0 +1,22 @@
+# 用户微服务本地测试环境：PG + Redis
+# 不要直接调用本文件，请使用 ./script/start_test_env.sh（负责端口探测、旧容器迁移与初始化）
+name: user-micro-test
+
+services:
+  pg:
+    image: ${PG_IMAGE:-docker.1ms.run/library/postgres:16-alpine}
+    environment:
+      POSTGRES_DB: ${DB_NAME:-user_test}
+      POSTGRES_USER: ${DB_USER:-test}
+      # 本机测试免密（端口只绑定 127.0.0.1）
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:${PG_HOST_PORT:-5433}:5432"
+    # 测试数据不持久化：数据盘用 tmpfs，容器删除即清空
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-test} -d ${DB_NAME:-user_test}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
