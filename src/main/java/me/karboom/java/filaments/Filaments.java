@@ -385,12 +385,17 @@ public abstract class Filaments<T> {
                 .recordFormat(JSONFormat.RecordFormat.OBJECT));
 
         // 为了兼容PG数据库指定返回字段的时候，json类型无法被正确识别
+        // 仅处理文本节点：jOOQ 会把 jsonb 列直接嵌入为对象/数组节点（Jackson3 下 asString 会抛异常）
         var arrayNode = mapper.readValue(json, ArrayNode.class);
         for (var obj : arrayNode) {
             for (var field : obj.properties()) {
-                var value = field.getValue().asString();
+                var node = field.getValue();
+                if (!node.isString()) {
+                    continue;
+                }
+                var value = node.asString();
                 if (value.startsWith("{") || value.startsWith("[")) {
-                    field.setValue(mapper.readValue(value.toString(), JsonNode.class));
+                    field.setValue(mapper.readValue(value, JsonNode.class));
                 }
             }
         }
