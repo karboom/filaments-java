@@ -426,10 +426,21 @@ public abstract class Filaments<T> {
         return q;
     }
 
+    /**
+     * 全模型投影：rt 缺省时替代裸 SELECT *——列清单取自构造期反射的 modelFields
+     * （排序保证语句稳定），JSON 字段与 rt 通道同样补 JSONB 类型。
+     * 模型里声明了而库里没有的列会直接 SQL 报错，符合"模型即表"的响亮失败约定。
+     */
+    private Field<?>[] modelProjection() {
+        return modelFields.keySet().stream()
+                .sorted()
+                .map(col -> jsonFields.contains(col) ? field(name(col), JSONB.class) : columnRef(col))
+                .toArray(Field<?>[]::new);
+    }
+
     private void buildSelectFieldsFromSpec(SelectQuery<Record> q, SelectSpec spec) {
         List<String> fields = spec.getSelectFields();
         if (fields != null && !fields.isEmpty()) {
-            if (fields.size() == 1) throw new RuntimeException("至少返回两个字段");
             for (String part : fields) {
                 var col = config.naming.apply(fieldNameSafe(part));
                 // JSON 字段（构造期分类）补 JSONB 类型，统一取值形态；varchar 存 JSON 文本的列
@@ -438,7 +449,9 @@ public abstract class Filaments<T> {
                 q.addSelect(jsonFields.contains(col) ? field(name(col), JSONB.class) : columnRef(col));
             }
         } else {
-            q.addSelect();
+            // 不再发 SELECT *：jOOQ 动态查询的 getSelect() 对通配投影是空的，
+            // doQuery 的列级映射拿不到列清单，只会产出空壳对象
+            q.addSelect(modelProjection());
         }
     }
 
@@ -648,6 +661,7 @@ public abstract class Filaments<T> {
 
     public List<T> getByIds(DSLContext db, List<String> ids, Boolean lock) {
         SelectQuery<Record> select = db.selectQuery();
+        select.addSelect(modelProjection());
         select.addFrom(tableRef());
         select.addConditions(trueCondition().and(columnRef(this.pk).in(ids)));
 

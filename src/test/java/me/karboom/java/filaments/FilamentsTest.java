@@ -19,8 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 /**
  * CRUD 全链路（真库 user_test，schema filaments_test，不 mock）。
  *
- * 说明：doQuery 以 select 字段名映射模型，SELECT * 通道（getByIds / 无 rt 的 get）
- * 不产出可映射列——见最终报告"库现状缺陷"。本类字段级断言统一走带 rt 的查询。
+ * 说明：doQuery 以 select 字段名映射模型；无 rt 的查询（含 getByIds）现在
+ * 以全模型列作为投影，可完整映射。
  *
  * <pre>
  * create 入参正交表（数据量 × 字段值形态 × 校验）：
@@ -200,7 +200,7 @@ class FilamentsTest {
 
     // endregion
 
-    // region getByIds（存在性；字段映射限制见类注释）
+    // region getByIds（全模型投影，可映射字段）
 
     @Nested
     class GetByIds {
@@ -260,10 +260,24 @@ class FilamentsTest {
         }
 
         @Test
-        void singleRtFieldThrows() {
-            assertThatThrownBy(() -> f.get(TestDb.db(), Map.of("rt", "id")))
-                    .isInstanceOf(RuntimeException.class)
-                    .hasMessageContaining("至少返回两个字段");
+        void singleRtFieldMaps() {
+            seed(2);
+            var ids = f.get(TestDb.db(), Map.of("rt", "id", "od", "id")).stream()
+                    .map(u -> u.id)
+                    .toList();
+            assertThat(ids).containsExactly("0", "1");
+        }
+
+        @Test
+        void noRtUsesFullModelProjection() {
+            seed(1);
+            var u = f.get(TestDb.db(), Map.of("name", "user-0")).getFirst();
+            assertAll(
+                    () -> assertThat(u.id).isEqualTo("0"),
+                    () -> assertThat(u.age).isEqualTo(20),
+                    () -> assertThat(u.type).isEqualTo(UserEnum.A),
+                    () -> assertThat(u.tags).containsExactly("a", "b"),
+                    () -> assertThat(u.address.city).isEqualTo("sh"));
         }
 
         @Test
