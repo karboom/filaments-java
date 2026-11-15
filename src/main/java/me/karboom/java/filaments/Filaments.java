@@ -25,7 +25,6 @@ import java.lang.reflect.ParameterizedType;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
-import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 import static org.jooq.impl.DSL.*;
@@ -155,14 +154,14 @@ public abstract class Filaments<T> {
 
     public T before (T data) {
         return data;
-    };
+    }
 
     public T after (T data) {
         return data;
     }
 
 
-    abstract public ValidatorBuilder<T> initValidator();
+    public abstract ValidatorBuilder<T> initValidator();
 
 
     private String fieldNameSafe(String fieldName) {
@@ -318,8 +317,7 @@ public abstract class Filaments<T> {
 
         var stat = db
                 .insertInto(tableRef())
-                .columns(dbFields)
-                ;
+                .columns(dbFields);
 
 
 
@@ -354,7 +352,9 @@ public abstract class Filaments<T> {
         return stat.execute();
     }
 
-    public Integer create(DSLContext db, T data) { return this.create(db, List.of(data));};
+    public Integer create(DSLContext db, T data) {
+        return this.create(db, List.of(data));
+    }
 
     // endregion
 

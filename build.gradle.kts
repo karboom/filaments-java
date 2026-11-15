@@ -2,6 +2,7 @@ import com.vanniktech.maven.publish.DeploymentValidation
 
 plugins {
     id("java-library")
+    id("checkstyle")
     id("com.vanniktech.maven.publish") version "0.37.0"
     id ("io.freefair.lombok") version "9.5.0"
 }
@@ -80,4 +81,18 @@ mavenPublishing {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+checkstyle {
+    toolVersion = "14.4.0"
+    configDirectory = file("config/checkstyle")
+}
+
+tasks.withType<Checkstyle>().configureEach {
+    isShowViolations = true
+    maxWarnings = 0
+    maxErrors = 0
+    configProperties = mapOf(
+        "checkstyle.suppressions.file" to file("config/checkstyle/suppressions.xml").absolutePath
+    )
 }

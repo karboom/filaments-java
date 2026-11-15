@@ -1,6 +1,5 @@
 package me.karboom.java.filaments;
 
-import me.karboom.java.filaments.model.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

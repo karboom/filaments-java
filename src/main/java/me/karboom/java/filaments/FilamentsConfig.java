@@ -136,10 +136,10 @@ public class FilamentsConfig {
     public List<String> sqlFuncList = PG_FUNCS;
 
     /** pages() 未指定 p 时的页码 */
-    public Long page = 1L;
+    public Integer page = 1;
 
     /** pages() 未指定 pc 时的页大小 */
-    public Long pageSize = 20L;
+    public Integer pageSize = 20;
 
     /**
      * 所有 JSON 读写（jsonb 字段编解码 + 结果行映射）共用的唯一 mapper。

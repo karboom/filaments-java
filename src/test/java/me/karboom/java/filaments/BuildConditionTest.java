@@ -1,6 +1,5 @@
 package me.karboom.java.filaments;
 
-import cn.hutool.core.util.StrUtil;
 import me.karboom.java.filaments.spec.FieldCondition;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;

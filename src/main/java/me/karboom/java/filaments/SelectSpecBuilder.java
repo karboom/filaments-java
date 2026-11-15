@@ -75,7 +75,7 @@ public class SelectSpecBuilder {
         switch (od) {
             case String s -> list.addAll(StrUtil.split(s, ","));
             case List<?> l -> list.addAll(l.stream().map(Object::toString).toList());
-            case null -> {}
+            case null -> { }
             default -> throw new IllegalStateException("Unexpected value: " + od);
         }
 
@@ -268,7 +268,10 @@ public class SelectSpecBuilder {
             case "like" -> cond.setOperator(FieldCondition.LIKE);
             case "notLike" -> cond.setOperator(FieldCondition.NOT_LIKE);
             case "intersect" -> cond.setOperator(FieldCondition.INTERSECT);
-            default -> { cond.setOperator(FieldCondition.EQ); isOperator = false; }
+            default -> {
+                cond.setOperator(FieldCondition.EQ);
+                isOperator = false;
+            }
         }
 
         // Exclude operator from funcChain; for EQ without explicit operator, keep all parts
@@ -313,7 +316,7 @@ public class SelectSpecBuilder {
                 stack.push(node);
                 current = node;
             } else if (charAt == ')') {
-                Set<String> all_child = new HashSet<>();
+                Set<String> allChild = new HashSet<>();
                 for (String key : current.str.split(",")) {
                     if (key.isEmpty()) continue;
                     if (key.startsWith("?")) {
@@ -321,22 +324,22 @@ public class SelectSpecBuilder {
                         current.value.add(current.children.get(index));
 
                         for (LogicNode child : current.children) {
-                            all_child.addAll(child.allChild);
+                            allChild.addAll(child.allChild);
                         }
                     } else if (key.contains("=")) {
                         int eqIdx = key.indexOf('=');
                         String k = key.substring(0, eqIdx);
                         String v = key.substring(eqIdx + 1);
-                        all_child.add(k);
+                        allChild.add(k);
                         current.value.add(new String[]{k, v});
                     } else {
                         // 裸 token：条件键或别名引用（带参数函数链等含保留字符的键只能这样引用），
                         // 能否解析留到 parseLogicTreeConditions 查表时校验
-                        all_child.add(key);
+                        allChild.add(key);
                         current.value.add(key);
                     }
                 }
-                current.allChild = new ArrayList<>(all_child);
+                current.allChild = new ArrayList<>(allChild);
 
                 stack.pop();
                 current = stack.peek();

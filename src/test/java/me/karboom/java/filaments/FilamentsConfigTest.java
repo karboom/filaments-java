@@ -112,8 +112,8 @@ class FilamentsConfigTest {
             assertAll(
                     () -> assertThat(config.nameSplitter).isEqualTo("|"),
                     () -> assertThat(config.aliasSplitter).isEqualTo("::"),
-                    () -> assertThat(config.page).isEqualTo(1L),
-                    () -> assertThat(config.pageSize).isEqualTo(20L),
+                    () -> assertThat(config.page).isEqualTo(1),
+                    () -> assertThat(config.pageSize).isEqualTo(20),
                     () -> assertThat(config.sqlFuncList).isSameAs(FilamentsConfig.PG_FUNCS),
                     () -> assertThat(config.mapper).isSameAs(FilamentsConfig.DEFAULT_MAPPER),
                     // 方法引用实例不保证 ==，用行为断言
@@ -123,10 +123,10 @@ class FilamentsConfigTest {
         @Test
         void instancesAreIndependent() {
             var other = new FilamentsConfig();
-            config.pageSize = 7L;
+            config.pageSize = 7;
             assertAll(
-                    () -> assertThat(config.pageSize).isEqualTo(7L),
-                    () -> assertThat(other.pageSize).isEqualTo(20L));
+                    () -> assertThat(config.pageSize).isEqualTo(7),
+                    () -> assertThat(other.pageSize).isEqualTo(20));
         }
 
         @Test

@@ -147,8 +147,8 @@ class ConstructorTest {
         void configsAreNotSharedBetweenInstances() {
             var a = new TestFilaments(TestDb.TABLE);
             var b = new TestFilaments(TestDb.TABLE);
-            a.config.pageSize = 5L;
-            assertThat(b.config.pageSize).isEqualTo(20L);
+            a.config.pageSize = 5;
+            assertThat(b.config.pageSize).isEqualTo(20);
         }
     }
 

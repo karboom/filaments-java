@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<!DOCTYPE suppressions PUBLIC
+        "-//Checkstyle//DTD SuppressionFilter Configuration 1.2//EN"
+        "https://checkstyle.org/dtds/suppressions_1_2.dtd">
+<!--
+  测试代码放宽：只保留命名、结构等硬性卫生项，
+  字符串风格与长行等表述性规则不约束测试。
+-->
+<suppressions>
+    <suppress files="[\\/]src[\\/]test[\\/]" checks="RegexpSingleline"/>
+    <!-- 测试方法名允许 combo1_and 这类正交组合描述式命名 -->
+    <suppress files="[\\/]src[\\/]test[\\/]" checks="MethodName"/>
+    <suppress files="[\\/]src[\\/]test[\\/]" checks="LineLength"/>
+    <suppress files="[\\/]src[\\/]test[\\/]" checks="EmptyBlock"/>
+</suppressions>
