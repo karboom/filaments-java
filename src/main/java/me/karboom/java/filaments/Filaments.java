@@ -354,10 +354,6 @@ public abstract class Filaments<T> {
         return stat.execute();
     }
 
-    public Integer create(DSLContext db, List<T> data, Consumer handler) {
-        return 1;
-    }
-
     public Integer create(DSLContext db, T data) { return this.create(db, List.of(data));};
 
     // endregion
