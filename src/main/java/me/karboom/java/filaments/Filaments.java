@@ -1,7 +1,13 @@
 package me.karboom.java.filaments;
 
 import am.ik.yavi.builder.ValidatorBuilder;
+import am.ik.yavi.core.CollectionValidator;
+import am.ik.yavi.core.ConstraintCondition;
 import am.ik.yavi.core.ConstraintPredicates;
+import am.ik.yavi.core.Validatable;
+import am.ik.yavi.core.Validator;
+import am.ik.yavi.fn.Pair;
+import am.ik.yavi.message.SimpleMessageFormatter;
 
 import cn.hutool.core.util.StrUtil;
 
@@ -250,25 +256,38 @@ public abstract class Filaments<T> {
 
 
     // region 新增
-    @SneakyThrows
-    public ValidatorBuilder<T> defaultValidator(ValidatorBuilder<T> builder, T data) {
-        var newBuilder = new ValidatorBuilder<T>(builder);
 
-        var list = ValidatorBuilder.class.getDeclaredField("predicatesList");
-        list.setAccessible(true);
+    /**
+     * 构建本行数据的校验器：约束名根字段（点分路径第一段）为 null 时跳过整条约束，
+     * 规避 "a.b" 这类嵌套约束在父对象为 null 时取值 NPE 的问题。
+     *
+     * <p>只用 yavi 公共 API（build + forEach* + 公共构造器）重建 Validator：
+     * 不反射触碰 ValidatorBuilder 内部字段（上游升级不碎），也不改动传入的 builder
+     * （旧实现 removeIf 作用于原 builder，共享 builder 会被逐行永久删约束）。
+     *
+     * <p>取舍：builder 的 messageKeySeparator / MessageFormatter 无公共 getter，
+     * 此处统一取 yavi 默认值（"."、SimpleMessageFormatter）。
+     */
+    public Validator<T> defaultValidator(ValidatorBuilder<T> builder, T data) {
+        var base = builder.build();
 
-
-        var newList = ( List<ConstraintPredicates<T, ?>>) list.get(builder);
-
-        newList.removeIf(p -> {
-            // 解决嵌套约束条件问题
+        var kept = new ArrayList<ConstraintPredicates<T, ?>>();
+        base.forEachPredicates(p -> {
             var rootObjKey = StrUtil.split(p.name(), ".").get(0);
-            return modelValue(data, rootObjKey) == null;
+            if (modelValue(data, rootObjKey) != null) {
+                kept.add(p);
+            }
         });
 
-        list.set(newBuilder, newList);
+        var collectionValidators = new ArrayList<CollectionValidator<T, ?, ?>>();
+        base.forEachCollectionValidator(collectionValidators::add);
 
-        return newBuilder;
+        var conditionalValidators = new ArrayList<Pair<ConstraintCondition<T>, Validatable<T>>>();
+        base.forEachConditionalValidator(conditionalValidators::add);
+
+        // failFast 与旧调用链（.failFast(true).build()）保持一致
+        return new Validator<>(".", kept, collectionValidators, conditionalValidators,
+                SimpleMessageFormatter.getInstance(), true);
     }
 
     /**
@@ -312,7 +331,7 @@ public abstract class Filaments<T> {
             this.before(row);
 
             // Todo 自定义模型处理函数
-            var validator = defaultValidator(initValidator(), row).failFast(true).build();
+            var validator = defaultValidator(initValidator(), row);
             var result = validator.validate(row);
             if (!result.isValid()) {
                 throw new Error(result.getFirst().message());
