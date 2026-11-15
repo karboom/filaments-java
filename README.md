@@ -43,7 +43,7 @@
    "查询年龄大于 18 的北京用户，按注册时间倒序" 直接映射为：
 
    ```java
-   filaments.pages(db, new HashMap<>() {{
+   filaments.getByPages(db, new HashMap<>() {{
        put("age|gt", 18);
        put("city", "北京");
        put("od", "-create_time");
@@ -59,7 +59,7 @@
    驼峰字段自动转下划线列名、JSON 列自动序列化、`p/pc/pg` 分页、`rt` 指定返回字段——LLM 不需要生成任何映射配置或样板代码，命名约定本身即是"提示词"。
 
 4. **接口面极小，一次对话即可上手**
-   核心入口只有 `create / updateByIds / deleteByIds / get / pages / getByIds / aggregation` 几个方法，第一个参数统一是 `DSLContext`。AI 只需少量示例（few-shot）即可覆盖整个库的用法，生成的代码风格高度一致、可预测。
+   核心入口只有 `create / updateByIds / deleteByIds / get / getByPages / getByIds / aggregation` 几个方法，第一个参数统一是 `DSLContext`。AI 只需少量示例（few-shot）即可覆盖整个库的用法，生成的代码风格高度一致、可预测。
 
 5. **安全边界清晰**
    所有值走占位符绑定；字段名/排序键/聚合分组经标识符白名单校验，函数链仅允许 `FilamentsConfig.sqlFuncList` 白名单函数且参数限数字字面量，JSON 路径段逐段校验并转义。非法输入直接抛错而非拼入 SQL，LLM 生成的查询不会引入拼接式 SQL 注入风险，适合作为"让 AI 直接操作数据查询"的落地层。
@@ -74,7 +74,7 @@
 
 ```gradle
 dependencies {
-    implementation 'io.github.karboom:filaments-java:2.0.1'
+    implementation 'io.github.karboom:filaments-java:2.0.2'
 }
 ```
 
@@ -84,24 +84,31 @@ dependencies {
 <dependency>
     <groupId>io.github.karboom</groupId>
     <artifactId>filaments-java</artifactId>
-    <version>2.0.1</version>
+    <version>2.0.2</version>
 </dependency>
 ```
 
 ### 基本用法
 
 ```java
-// 创建 Filaments 实例
-var userFilament = new Filaments<>(User.class);
+// 一个实例对应一张表：Filaments 是抽象类，模型类型取自匿名子类的泛型参数，
+// 且必须实现唯一抽象方法 initValidator（yavi 校验器入口，无校验需求时返回空 builder 即可）
+var userFilament = new Filaments<User>("user") {
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+};
 
 // 使用查询字符串进行查询
 var users = userFilament.get(db, new HashMap<>() {{
     put("age|in", List.of(22, 23));
 }});
 
-// 分页查询
-var page = userFilament.pages(db, new HashMap(){{
+// 分页查询：返回 PageResult（list + total）；total 仅在传入 pg 时计算
+var page = userFilament.getByPages(db, new HashMap<>() {{
     put("name", "x");
+    put("pg", 1);
 }});
 ```
 
@@ -115,7 +122,7 @@ var page = userFilament.pages(db, new HashMap(){{
 | p        | 指定当前页码                     | 1      | ?p=3         | ```limit 20 offset 40```                |
 | pc       | 指定页内行数                     | 20     | ?pc=18       | ```limit 18 offset 0```                 |
 | od       | 指定排序规则                     | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
-| pg       | 是否需要计算分页(仅分页函数生效) | 0      | ?pg=1        | ``` limit ? offset ? ```                |
+| pg       | 是否需要计算分页(仅 getByPages 生效) | 0      | ?pg=1        | ``` count(*) alongside limit ? offset ? ``` |
 
 ### 字段表达式
 
@@ -217,7 +224,7 @@ var filament = new Filaments<User>("filaments_camel", config) {
 | `nameSplitter` | `"\|"` | 查询语法里 `字段\|函数\|操作符` 的分隔符 |
 | `aliasSplitter` | `"::"` | 条件别名寻址分隔符（`别名::字段\|函数\|操作符`），永不进 SQL |
 | `sqlFuncList` | `PG_FUNCS`（另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS`） | 函数链与聚合函数白名单，可整体换预设或增删 |
-| `page` / `pageSize` | 1 / 20 | `pages()` 未传 `p` / `pc` 时的默认分页 |
+| `page` / `pageSize` | 1 / 20 | `getByPages()` 未传 `p` / `pc` 时的默认分页 |
 
 ### 类型与 JSON 约定
 
@@ -238,27 +245,55 @@ var filament = new Filaments<User>("filaments_camel", config) {
 
 ### 子查询
 
-对于复杂的查询需求，可以通过 `sub` 参数传入子查询：
+`get` 没有 `sub` 重载；子查询有两个真实入口：
+
+1. `aggregation` 自带 `sub` 参数（传 `null` 即普通表）：
 
 ```java
-var subQuery =  dsl.selectQuery();
-var users = userFilament.get(db, new HashMap<>() {{
-    put("role", "admin");
-}}, subQuery);
+var stat = userFilament.aggregation(db,
+        Map.of("count", "id"),      // 聚合目标 {聚合函数: 字段}
+        Map.of("role", "admin"),    // 筛选条件（同查询字符串语法）
+        List.of("type"),            // 分组字段
+        buildMySubQuery(db));       // 子查询
 ```
 
-### 自定义扩展
-
-继承 `Filaments` 类，扩展自定义方法：
+2. 其他查询在子类里走 protected 的 `buildSelect` + `doQuery` 自建入口：
 
 ```java
 public class UserFilaments extends Filaments<User> {
     public UserFilaments() {
-        super(User.class);
+        super("user");
     }
-    
+
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+
+    public List<User> getWithSub(DSLContext db, Map<String, Object> query, SelectQuery<Record> sub) {
+        return doQuery(buildSelect(db, query, sub), false);
+    }
+}
+```
+
+### 自定义扩展
+
+继承 `Filaments` 类（构造器第一参数是表名；模型类型取自 `extends` 的泛型参数），扩展自定义方法：
+
+```java
+public class UserFilaments extends Filaments<User> {
+    public UserFilaments() {
+        super("user");
+    }
+
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+
     public List<Record> getByOrgId(DSLContext db, Long orgId) {
-        return db.raw();
+        // 需要时随时落回原生 jOOQ
+        return db.select().from(table("user")).where(field("org_id").eq(orgId)).fetch();
     }
 }
 ```
@@ -268,8 +303,8 @@ public class UserFilaments extends Filaments<User> {
 ### 如何支持更复杂的 SQL
 
 1. 在数据库中编写视图
-2. 通过 `sub` 参数传入构造的子查询
-3. 继承 `Filaments` 类，扩展自定义方法，通过 `db.raw()` 直接编写语句
+2. 通过 `aggregation` 的 `sub` 参数传入构造的子查询（或在子类里用 `buildSelect` 自建带子查询的入口）
+3. 继承 `Filaments` 类，扩展自定义方法，直接使用注入的 `DSLContext` 编写原生语句
 
 ### 为什么第一个参数都是 DSLContext
 

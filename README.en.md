@@ -49,7 +49,7 @@ Asking an LLM to write queries with a traditional ORM means it has to memorize a
    "Find Beijing users older than 18, ordered by sign-up time descending" maps directly to:
 
    ```java
-   filaments.pages(db, new HashMap<>() {{
+   filaments.getByPages(db, new HashMap<>() {{
        put("age|gt", 18);
        put("city", "Beijing");
        put("od", "-create_time");
@@ -65,7 +65,7 @@ Asking an LLM to write queries with a traditional ORM means it has to memorize a
    camelCase fields map to snake_case columns automatically, JSON columns are (de)serialized transparently, `p/pc/pg` handle pagination, `rt` selects the return fields. The LLM never has to generate mapping config or boilerplate — the naming convention *is* the prompt.
 
 4. **Tiny API surface, one conversation to master it**
-   The core entry points are just `create / updateByIds / deleteByIds / get / pages / getByIds / aggregation`, all taking `DSLContext` as the first argument. A few few-shot examples cover the entire library, so generated code stays consistent and predictable.
+   The core entry points are just `create / updateByIds / deleteByIds / get / getByPages / getByIds / aggregation`, all taking `DSLContext` as the first argument. A few few-shot examples cover the entire library, so generated code stays consistent and predictable.
 
 5. **Clear security boundary**
    All values go through placeholder binding; field names, sort keys and group-by fields are validated against an identifier whitelist, function chains only accept functions from `FilamentsConfig.sqlFuncList` with numeric literal arguments, and JSON path segments are validated per-segment and escaped. Invalid input throws instead of reaching the SQL text, so AI-generated queries don't introduce concatenated-SQL injection risks — a solid foundation for "letting AI drive data access".
@@ -97,17 +97,26 @@ dependencies {
 ### Basic usage
 
 ```java
-// create a Filaments instance
-var userFilament = new Filaments<>(User.class);
+// One instance per table: Filaments is abstract — the model type comes from the
+// anonymous subclass's generic argument, and the single abstract method
+// initValidator must be implemented (yavi validator entry; an empty builder is fine
+// if you don't need validation)
+var userFilament = new Filaments<User>("user") {
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+};
 
 // query with the query-string DSL
 var users = userFilament.get(db, new HashMap<>() {{
     put("age|in", List.of(22, 23));
 }});
 
-// paginated query
-var page = userFilament.pages(db, new HashMap(){{
+// paginated query: returns PageResult (list + total); total is only computed when pg is set
+var page = userFilament.getByPages(db, new HashMap<>() {{
     put("name", "x");
+    put("pg", 1);
 }});
 ```
 
@@ -121,7 +130,7 @@ var page = userFilament.pages(db, new HashMap(){{
 | p   | page number                      | 1       | ?p=3                        | `limit 20 offset 40`                                     |
 | pc  | page size                        | 20      | ?pc=18                      | `limit 18 offset 0`                                      |
 | od  | ordering (`-` = desc)            | null    | ?od=id,-height              | `order by id asc, height desc`                           |
-| pg  | compute total count (in `pages`) | 0       | ?pg=1                       | `count(*)` alongside `limit ? offset ?`                  |
+| pg  | compute total count (in `getByPages`) | 0       | ?pg=1                       | `count(*)` alongside `limit ? offset ?`                  |
 
 ### Field expressions
 
@@ -225,7 +234,7 @@ Everything else tunable lives on the same config object (share one instance or b
 | `nameSplitter` | `"\|"` | separator of `field\|function\|operator` in query keys |
 | `aliasSplitter` | `"::"` | condition-alias separator (`alias::field\|function\|operator`), never reaches SQL |
 | `sqlFuncList` | `PG_FUNCS` (also `MYSQL_FUNCS` / `SQLSERVER_FUNCS`) | function-chain and aggregate whitelist, swap preset or extend |
-| `page` / `pageSize` | 1 / 20 | paging used by `pages()` when `p` / `pc` are absent |
+| `page` / `pageSize` | 1 / 20 | paging used by `getByPages()` when `p` / `pc` are absent |
 
 ### Types and JSON
 
@@ -246,18 +255,19 @@ Values are not mapped through hand-written setters. The classification happens o
 
 ### Sub-queries
 
-For more complex needs, pass a pre-built sub-query via the `sub` argument:
+`get` has no `sub` overload; there are two real entry points for sub-queries:
+
+1. `aggregation` takes a `sub` argument directly (`null` for the plain table):
 
 ```java
-var subQuery = dsl.selectQuery();
-var users = userFilament.get(db, new HashMap<>() {{
-    put("role", "admin");
-}}, subQuery);
+var stat = userFilament.aggregation(db,
+        Map.of("count", "id"),      // targets {func: field}
+        Map.of("role", "admin"),    // conditions (same query-string syntax)
+        List.of("type"),            // group-by fields
+        buildMySubQuery(db));       // sub-query
 ```
 
-### Custom extensions
-
-Extend the `Filaments` class with your own methods:
+2. For any other query, build your own entry point in a subclass via the protected `buildSelect` + `doQuery`:
 
 ```java
 public class UserFilaments extends Filaments<User> {
@@ -265,9 +275,35 @@ public class UserFilaments extends Filaments<User> {
         super("user");
     }
 
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+
+    public List<User> getWithSub(DSLContext db, Map<String, Object> query, SelectQuery<Record> sub) {
+        return doQuery(buildSelect(db, query, sub), false);
+    }
+}
+```
+
+### Custom extensions
+
+Extend the `Filaments` class (the constructor's first argument is the table name; the model type comes from the `extends` generic argument) with your own methods:
+
+```java
+public class UserFilaments extends Filaments<User> {
+    public UserFilaments() {
+        super("user");
+    }
+
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+
     public List<Record> getByOrgId(DSLContext db, Long orgId) {
         // drop down to raw jOOQ whenever you need it
-        return db.select().from(table("user")).where(...).fetch();
+        return db.select().from(table("user")).where(field("org_id").eq(orgId)).fetch();
     }
 }
 ```
@@ -277,7 +313,7 @@ public class UserFilaments extends Filaments<User> {
 ### How do I run more complex SQL?
 
 1. Define a database view and point a Filaments at it
-2. Pass a hand-built sub-query via the `sub` argument
+2. Pass a hand-built sub-query via the `sub` argument of `aggregation` (or wrap `buildSelect` in a subclass)
 3. Extend `Filaments` and use the underlying `DSLContext` directly
 
 ### Why is the first argument always `DSLContext`?
