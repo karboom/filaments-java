@@ -386,8 +386,7 @@ public class SelectSpecBuilder {
                 funcName = funcName.substring(0, funcName.indexOf('('));
             }
 
-            // 防注入：函数名必须精确命中白名单（原实现此路径完全未校验，pg_sleep 等可直拼），
-            // 参数仅允许数字字面量（原实现括号内容原样拼入 SQL）
+            // 防注入：函数名必须精确命中白名单，括号参数仅允许数字字面量
             final String checkedName = funcName.trim();
             var whiteListed = config.sqlFuncList.stream()
                     .anyMatch(w -> w.equalsIgnoreCase(checkedName));

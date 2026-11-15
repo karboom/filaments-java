@@ -274,7 +274,7 @@ public abstract class Filaments<T> {
     /**
      * 模型值 -> 可绑库的值，按构造期的 {@link #jsonFields} 判定，不看运行时值的来历：
      * JSON 字段必为 POJO/集合/Map，直接序列化；
-     * 枚举按 {@code name()} 绑定（旧值嗅探曾把它序列化成带引号的 "\"A\""，varchar(1) 直接超长）；
+     * 枚举按 {@code name()} 绑定（序列化成带引号的 "\"A\"" 会让 varchar(1) 直接超长）；
      * 其余标量（含日期、jOOQ JSON/JSONB——其列声明在 {@link #isJsonType} 中已划入非 JSON）原样绑定。
      */
     @SneakyThrows
@@ -434,7 +434,7 @@ public abstract class Filaments<T> {
                 var col = config.naming.apply(fieldNameSafe(part));
                 // JSON 字段（构造期分类）补 JSONB 类型，统一取值形态；varchar 存 JSON 文本的列
                 // 也只是 JSONB.valueOf 包装，无 DB cast 风险。
-                // 时间列无需补类型：doQuery 已改列级映射（jOOQ 转换器），旧"文本退化"TODO 就此关闭。
+                // 时间列无需补类型：doQuery 走列级映射（jOOQ 转换器）。
                 q.addSelect(jsonFields.contains(col) ? field(name(col), JSONB.class) : columnRef(col));
             }
         } else {
@@ -446,7 +446,7 @@ public abstract class Filaments<T> {
         List<OrderSpec> orderBy = spec.getOrderBy();
         if (orderBy != null) {
             for (OrderSpec os : orderBy) {
-                // 防注入：原实现 field(String) 裸拼用户可控排序键（@PlainSQL）
+                // 防注入：用户可控排序键必须先经标识符校验，再以表达式引用
                 var sortKey = fieldNameSafe(os.getField());
                 var sortField = field(sortKey.contains(".") ? jsonKeyExpr(sortKey) : columnExpr(sortKey));
                 if (OrderSpec.DESC.equals(os.getDirection())) {
@@ -490,7 +490,7 @@ public abstract class Filaments<T> {
         var value = fc.getValues().toArray();
         var fieldName = fc.getField();
 
-        // 防注入：普通列走 name() 引用 + 列名归一化；jsonb 路径段级白名单校验（原实现段0裸拼、路径段未转义）
+        // 防注入：普通列走 name() 引用 + 列名归一化；jsonb 路径逐段过标识符白名单校验
         var cleaned = fieldNameSafe(fieldName);
         var sqlField = cleaned.contains(".") ? jsonKeyExpr(cleaned) : columnExpr(cleaned);
 
@@ -694,7 +694,7 @@ public abstract class Filaments<T> {
         base.getSelect().clear();
 
         for (var f: group) {
-            // 防注入：分组字段做标识符校验后用 Name 引用（原实现 field(f) 裸拼）；
+            // 防注入：分组字段做标识符校验后用 Name 引用；
             // 必须走 field(name(...)) 而非 field(String)，否则 intoMaps 键会带上引用引号
             var cleaned = fieldNameSafe(f);
             Field<?> groupField;
@@ -716,7 +716,7 @@ public abstract class Filaments<T> {
             for (var f: value) {
                 var fieldName = fieldNameSafe((String) f);
                 var funcName = funcNameSafe(func);
-                // 防注入：字段名段级白名单校验（原实现仅去反引号即可拼入任意 SQL）
+                // 防注入：字段名逐段过标识符白名单校验，拒绝结构字符拼入 SQL
                 identsSafe(fieldName);
                 var sqlField = fieldName.contains(".") ? jsonKeyExpr(fieldName) : columnExpr(fieldName);
 
