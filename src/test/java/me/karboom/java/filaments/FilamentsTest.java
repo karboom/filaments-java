@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.DriverManager;
 import java.util.*;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -297,12 +296,32 @@ public class FilamentsTest {
             assertThat(n.getAllChild()).isEmpty();
         }
 
-        // T11: 边界——叶子必须是 k=v 格式
+        // T11: 边界——叶子裸 token 是"条件引用"（别名或完整键），语法层不再报错，
+        // 引用是否有效由 parse 查表决定（带参数函数链等含保留字符的键只能这样引用）
         @Test
-        void t11_invalidLeafFormat() {
-            assertThatThrownBy(() -> builder.parseLogic("(abc)"))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("k=v");
+        void t11_bareLeafIsConditionReference() {
+            var n = builder.parseLogic("(abc)");
+            assertThat(n.getValue().get(0)).isEqualTo("abc");
+            assertThat(n.getAllChild()).containsExactly("abc");
+
+            // abc 既不是查询参数键也不是别名 → 解析阶段拒绝
+            assertThatThrownBy(() -> builder.parse(new HashMap<>() {{
+                put("lg", "(abc)");
+                put("name", "John");
+            }}, null)).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        // T11b: 别名引用带参数函数链的键（原语法无法表达的场景）
+        @Test
+        void t11b_aliasReferenceToFuncChainKey() {
+            var spec = builder.parse(new HashMap<>() {{
+                put("lo::extra.age|substr(1,2)|ge", "5");
+                put("hi::extra.age|substr(3,4)|le", "10");
+                put("lg", "!(lo,hi)");
+            }}, null);
+            assertThat(spec.getWhere().getType()).isEqualTo(LogicNode.OR);
+            assertThat(((FieldCondition) spec.getWhere().getValue().get(0)).getFuncChain())
+                    .containsExactly("substr(1,2)");
         }
 
         // T12: 完整 parse 流程下 String[] 叶子转为 FieldCondition（EQ）
@@ -506,11 +525,12 @@ public class FilamentsTest {
             assertThat(sql).contains("#>> '{email}'").contains("like '%u%'");
         }
 
-        // B7: INTERSECT + 三值 + jsonb_path_exists
+        // B7: INTERSECT + 三值 + jsonb_path_exists（值经 vars 绑定，SQL 里只出现 $qN 引用）
         @Test
         void b7_intersectThreeValues() {
             var sql = render(fc("roles|intersect", "a,b,c"));
-            assertThat(sql).contains("jsonb_path_exists").contains("@ == \"a\"");
+            assertThat(sql).contains("jsonb_path_exists")
+                    .contains("@ == $q0 || @ == $q1 || @ == $q2");
         }
 
         // B8: D4=2 NE + 单函数链（"eq" 非关键字 → 显式操作符须用 ne 等关键字）
@@ -585,7 +605,7 @@ public class FilamentsTest {
      *   D2 type 取值:  1=A(合法枚举)      2=C(合法枚举)                    3=X(非法枚举)
      *   D3 验证点:     1=写回对象全等     2=影响行数                       3=DB 默认值列
      *
-     * L9(3^3) 用例映射（D1=3 或 D2=3 为校验失败用例，D3 降级为"抛 Filaments.Error"断言）：
+     * L9(3^3) 用例映射（D1=3 或 D2=3 为校验失败用例，D3 降级为"抛 Error"断言）：
      *   用例  D1 D2 D3  期望
      *   C1     1  1  1  成功，递归对比写回一致
      *   C2     1  2  2  成功，影响行数 1
@@ -660,7 +680,7 @@ public class FilamentsTest {
             var obj = baseUser(IdUtil.getSnowflake().nextIdStr());
             obj.setType("X");
             assertThatThrownBy(() -> filaments.create(db, obj))
-                    .isInstanceOf(Filaments.Error.class)
+                    .isInstanceOf(Error.class)
                     .hasMessageContaining("类型错误");
         }
 
@@ -671,7 +691,7 @@ public class FilamentsTest {
             obj.setRoles(null);
             obj.setType("X");
             assertThatThrownBy(() -> filaments.create(db, obj))
-                    .isInstanceOf(Filaments.Error.class);
+                    .isInstanceOf(Error.class);
         }
 
         // C8: D1=3 extra 非 null 但 email null → nest 约束生效
@@ -680,7 +700,7 @@ public class FilamentsTest {
             var obj = baseUser(IdUtil.getSnowflake().nextIdStr());
             obj.getExtra().setEmail(null);
             assertThatThrownBy(() -> filaments.create(db, obj))
-                    .isInstanceOf(Filaments.Error.class);
+                    .isInstanceOf(Error.class);
         }
 
         // C9: D1=3 D2=2 email null + type C
@@ -690,7 +710,7 @@ public class FilamentsTest {
             obj.setType("C");
             obj.getExtra().setEmail(null);
             assertThatThrownBy(() -> filaments.create(db, obj))
-                    .isInstanceOf(Filaments.Error.class);
+                    .isInstanceOf(Error.class);
         }
 
         // C10: 批量合法
@@ -708,7 +728,7 @@ public class FilamentsTest {
             bad.setType("X");
 
             assertThatThrownBy(() -> filaments.create(db, List.of(baseUser(IdUtil.getSnowflake().nextIdStr()), bad)))
-                    .isInstanceOf(Filaments.Error.class);
+                    .isInstanceOf(Error.class);
 
             assertThat(filaments.get(db, Map.of("rt", "id,name"))).hasSize(10);
         }
@@ -912,6 +932,27 @@ public class FilamentsTest {
             assertThat(res.get(0).wechatId).isEqualTo("xx");
             assertThat(res.get(0).name).isNull();
         }
+
+        // Q11: 别名 + 同字段不同函数链 + OR（原 lg 语法无法表达）
+        @Test
+        void q11_aliasWithFuncChainOr() {
+            var res = filaments.get(db, new HashMap<>() {{
+                put("firstTwo::extra.age|substr(1,2)", "30");
+                put("firstOne::extra.age|substr(1,1)", "4");
+                put("lg", "!(firstTwo,firstOne)");
+                put("od", "id");
+            }});
+            // age 前两位为 30（id 1）或首位为 4（id 5）
+            assertThat(ids(res)).containsExactly("1", "5");
+        }
+
+        // Q12: 别名指向未知条件 → 解析报错
+        @Test
+        void q12_unknownAliasThrows() {
+            assertThatThrownBy(() -> filaments.get(db, Map.of("lg", "(missing)")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("missing");
+        }
     }
 
     // =====================================================================
@@ -971,13 +1012,8 @@ public class FilamentsTest {
             assertThat(res.get(0).name).isNull();
         }
 
-        /**
-         * 已知限制（库级回归，暂不改库代码）：rt 投影会丢失列类型信息，
-         * jOOQ 将时间渲染为 "yyyy-MM-dd HH:mm:ss[.SSS]"（无 T、无偏移量），
-         * Jackson 3 严格 ISO 解析 java.time 模型会抛 InvalidFormatException。
-         * SELECT *（bf6 路径）不受影响。待库侧方案定稿后启用本用例。
-         */
-        @org.junit.jupiter.api.Disabled("时间字段投影解析：等待库侧修复方案")
+        // BF7: rt 投影带类型（曾经 jOOQ 丢列类型 → 时间被渲染成 "yyyy-MM-dd HH:mm:ss"，
+        // Jackson 3 严格 ISO 解析直接抛 InvalidFormatException）
         @Test
         void bf7_timeFieldProjection() {
             var res = filaments.get(db, Map.of("rt", List.of("id", "createTime"), "od", "id"));
@@ -1035,7 +1071,7 @@ public class FilamentsTest {
         // P1
         @Test
         void p1_noPgNoCount() {
-            var res = filaments.pages(db, new HashMap<>());
+            var res = filaments.getByPages(db, new HashMap<>());
             assertThat(res.total).isNull();
             assertThat(res.list).hasSize(10);
         }
@@ -1043,7 +1079,7 @@ public class FilamentsTest {
         // P2
         @Test
         void p2_customPcWithEq() {
-            var res = filaments.pages(db, new HashMap<>() {{
+            var res = filaments.getByPages(db, new HashMap<>() {{
                 put("pc", 2);
                 put("type", "B");
                 put("rt", "id,name");
@@ -1055,7 +1091,7 @@ public class FilamentsTest {
         // P3: p 不传 → 默认 p1，pc=4 生效；in 条件
         @Test
         void p3_defaultPageWithIn() {
-            var res = filaments.pages(db, new HashMap<>() {{
+            var res = filaments.getByPages(db, new HashMap<>() {{
                 put("pc", 4);
                 put("type|in", "A,C");
                 put("rt", "id,type");
@@ -1067,7 +1103,7 @@ public class FilamentsTest {
         // P4
         @Test
         void p4_pgOnNoCond() {
-            var res = filaments.pages(db, new HashMap<>() {{
+            var res = filaments.getByPages(db, new HashMap<>() {{
                 put("pg", 1);
                 put("rt", "id,name");
             }});
@@ -1078,7 +1114,7 @@ public class FilamentsTest {
         // P5
         @Test
         void p5_pgOnPc2Eq() {
-            var res = filaments.pages(db, new HashMap<>() {{
+            var res = filaments.getByPages(db, new HashMap<>() {{
                 put("pg", 1);
                 put("pc", 2);
                 put("type", "B");
@@ -1091,7 +1127,7 @@ public class FilamentsTest {
         // P6
         @Test
         void p6_pgOnPc4In() {
-            var res = filaments.pages(db, new HashMap<>() {{
+            var res = filaments.getByPages(db, new HashMap<>() {{
                 put("pg", 1);
                 put("pc", 4);
                 put("type|in", "A,C");
@@ -1103,7 +1139,7 @@ public class FilamentsTest {
         // P7
         @Test
         void p7_pgDefaultPcEq() {
-            var res = filaments.pages(db, new HashMap<>() {{
+            var res = filaments.getByPages(db, new HashMap<>() {{
                 put("pg", 1);
                 put("type", "B");
             }});
@@ -1114,7 +1150,7 @@ public class FilamentsTest {
         // P8
         @Test
         void p8_pgPc2InRt() {
-            var res = filaments.pages(db, new HashMap<>() {{
+            var res = filaments.getByPages(db, new HashMap<>() {{
                 put("pg", 1);
                 put("pc", 2);
                 put("type|in", "A,C");
@@ -1127,7 +1163,7 @@ public class FilamentsTest {
         // P9
         @Test
         void p9_pgPc4NoCondRt() {
-            var res = filaments.pages(db, new HashMap<>() {{
+            var res = filaments.getByPages(db, new HashMap<>() {{
                 put("pg", 1);
                 put("pc", 4);
                 put("rt", "id,type");
@@ -1504,8 +1540,7 @@ public class FilamentsTest {
             var t = "user_mini_pk";
             db.deleteFrom(DSL.table(DSL.name(t))).execute();
 
-            var f = new Filaments<Mini>(t) {
-                { pk = "uid"; }
+            var f = new Filaments<Mini>(t, "uid") {
 
                 @Override
                 public ValidatorBuilder<Mini> initValidator() {

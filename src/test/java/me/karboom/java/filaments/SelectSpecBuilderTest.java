@@ -490,6 +490,178 @@ public class SelectSpecBuilderTest {
     }
 
     /**
+     * 条件别名（别名::字段|函数链|操作符）解析维度：
+     *   D1 引用方式: 1=裸别名  2=完整键  3=内联 k=v
+     *   D2 键内容:   1=普通列  2=带参数函数链  3=jsonb 点路径
+     *   D3 结构:     1=单层 AND 2=单层 OR  3=嵌套
+     * 用例映射：
+     *   G1  1/2/3  同字段不同函数链用别名表达，嵌套 OR/AND
+     *   G2  1/2/2  同一表达式两次出现（不同操作符/值）不折叠
+     *   G3  1/1/1  别名条件 + 外部普通条件
+     *   G4  2/2/1  lg 直接写完整键（含 ::）
+     *   G5  -/-/-  未知别名引用 / 非法别名 / 重复别名 → 抛错
+     */
+    @Nested
+    @DisplayName("条件别名 alias")
+    class ConditionAlias {
+
+        @Test
+        void funcChainKeyViaAlias() {
+            var spec = builder.parse(new HashMap<>() {{
+                put("minAge::extra.age|substr(1,2)|ge", "5");
+                put("maxAge::extra.age|substr(3,4)|le", "10");
+                put("lg", "!(minAge,maxAge)");
+            }}, null);
+            assertThat(spec.getWhere().getType()).isEqualTo(OR);
+            assertThat(spec.getWhere().getValue()).hasSize(2);
+
+            var first = (FieldCondition) spec.getWhere().getValue().get(0);
+            assertThat(first.getField()).isEqualTo("extra.age");
+            assertThat(first.getFuncChain()).containsExactly("substr(1,2)");
+            assertThat(first.getOperator()).isEqualTo(FieldCondition.GE);
+            assertThat(first.getValues()).containsExactly("5");
+
+            var second = (FieldCondition) spec.getWhere().getValue().get(1);
+            assertThat(second.getField()).isEqualTo("extra.age");
+            assertThat(second.getFuncChain()).containsExactly("substr(3,4)");
+            assertThat(second.getOperator()).isEqualTo(FieldCondition.LE);
+            assertThat(second.getValues()).containsExactly("10");
+        }
+
+        // G2: 同一字段同一函数链，靠别名避免 Map 键折叠
+        @Test
+        void sameExpressionTwice() {
+            var spec = builder.parse(new HashMap<>() {{
+                put("dup1::name|lower|eq", "a");
+                put("dup2::name|lower|eq", "b");
+                put("lg", "!(dup1,dup2)");
+            }}, null);
+            assertThat(spec.getWhere().getValue()).hasSize(2);
+            var c1 = (FieldCondition) spec.getWhere().getValue().get(0);
+            var c2 = (FieldCondition) spec.getWhere().getValue().get(1);
+            assertThat(c1.getField()).isEqualTo(c2.getField()).isEqualTo("name");
+            assertThat(c1.getValues()).containsExactly("a");
+            assertThat(c2.getValues()).containsExactly("b");
+        }
+
+        // G3: 别名条件被 lg 覆盖，未覆盖的普通条件仍在顶层 AND 追加
+        @Test
+        void aliasSubtreeWithExternalCondition() {
+            var spec = builder.parse(new HashMap<>() {{
+                put("lo::extra.age|ge", "18");
+                put("hi::extra.age|le", "60");
+                put("type", "A");
+                put("lg", "!(lo,hi)");
+            }}, null);
+            assertThat(spec.getWhere().getType()).isEqualTo(AND);
+            assertThat(spec.getWhere().getValue()).hasSize(2);
+
+            var child = (LogicNode) spec.getWhere().getValue().getLast();
+            assertThat(child.getType()).isEqualTo(OR);
+            assertThat(((FieldCondition) child.getValue().get(0)).getOperator()).isEqualTo(FieldCondition.GE);
+            assertThat(((FieldCondition) spec.getWhere().getValue().get(0)).getField()).isEqualTo("type");
+        }
+
+        // G4: 不带括号的内联 k=v（key 含别名前缀）依旧可用，保持向后兼容
+        @Test
+        void inlineKvWithAliasPrefixStillWorks() {
+            var spec = builder.parse(new HashMap<>() {{
+                put("lg", "(a::name=John)");
+            }}, null);
+            var fc = (FieldCondition) spec.getWhere().getValue().get(0);
+            assertThat(fc.getField()).isEqualTo("name");
+            assertThat(fc.getOperator()).isEqualTo(FieldCondition.EQ);
+            assertThat(fc.getValues()).containsExactly("John");
+        }
+
+        // 嵌套组合：别名 + 内联 k=v + 三层子树
+        @Test
+        void nestedAliasTree() {
+            var spec = builder.parse(new HashMap<>() {{
+                put("lo::extra.age|substr(1,2)|ge", "5");
+                put("hi::extra.age|substr(3,4)|le", "10");
+                put("type", "A");
+                put("lg", "(lo,!(hi,(type=1,role=2)))");
+            }}, null);
+            assertThat(spec.getWhere().getType()).isEqualTo(AND);
+            // lo 被 lg 覆盖，不再有顶层重复条件；lg 子树直接作为 where
+            assertThat(spec.getWhere().getValue()).hasSize(2);
+            assertThat(spec.getWhere().getValue().get(0)).isInstanceOf(FieldCondition.class);
+            var or = (LogicNode) spec.getWhere().getValue().get(1);
+            assertThat(or.getType()).isEqualTo(OR);
+            assertThat(or.getValue()).hasSize(2);
+            assertThat(((FieldCondition) or.getValue().get(0)).getFuncChain())
+                    .containsExactly("substr(3,4)");
+            var innerAnd = (LogicNode) or.getValue().get(1);
+            assertThat(innerAnd.getValue()).hasSize(2);
+        }
+
+        // 文档示例形态：OR 子树 + 两个同级别名叶子
+        @Test
+        void orSubtreePlusSiblingAliases() {
+            var spec = builder.parse(new HashMap<>() {{
+                put("lowAge::extra.age|substr(1,2)|ge", "5");
+                put("highAge::extra.age|substr(3,4)|le", "10");
+                put("dup1::name|lower", "ann");
+                put("dup2::name|lower", "bob");
+                put("lg", "(!(lowAge,highAge),dup1,dup2)");
+            }}, null);
+            assertThat(spec.getWhere().getType()).isEqualTo(AND);
+            assertThat(spec.getWhere().getValue()).hasSize(3);
+            var or = (LogicNode) spec.getWhere().getValue().get(0);
+            assertThat(or.getType()).isEqualTo(OR);
+            assertThat(or.getValue()).hasSize(2);
+            // 同级别名直接成为叶子条件，未被 lg 覆盖的外部条件不会重复追加
+            assertThat(spec.getWhere().getValue().get(1)).isInstanceOf(FieldCondition.class);
+            assertThat(((FieldCondition) spec.getWhere().getValue().get(2)).getValues())
+                    .containsExactly("bob");
+        }
+
+        // 内联 k=v 的 k 为别名时，字段/函数链仍按真实键解析，值以 lg 内联为准
+        @Test
+        void inlineKvValueOverridesAliasValue() {
+            var spec = builder.parse(new HashMap<>() {{
+                put("lo::extra.age|substr(1,2)|ge", "18");
+                put("lg", "(lo=99)");
+            }}, null);
+            var fc = (FieldCondition) spec.getWhere().getValue().get(0);
+            assertThat(fc.getField()).isEqualTo("extra.age");
+            assertThat(fc.getFuncChain()).containsExactly("substr(1,2)");
+            assertThat(fc.getOperator()).isEqualTo(FieldCondition.GE);
+            assertThat(fc.getValues()).containsExactly("99");
+        }
+
+        @Test
+        void unknownAliasReferenceThrows() {
+            assertThatThrownBy(() -> builder.parse(new HashMap<>() {{
+                put("name", "John");
+                put("lg", "(nope)");
+            }}, null)).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        void invalidAliasThrows() {
+            assertThatThrownBy(() -> builder.parse(new HashMap<>() {{
+                put("1bad::name", "John");
+                put("lg", "(1bad)");
+            }}, null)).isInstanceOf(IllegalArgumentException.class);
+
+            assertThatThrownBy(() -> builder.parse(new HashMap<>() {{
+                put("ok::name::extra", "John");
+                put("lg", "(ok)");
+            }}, null)).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        void duplicateAliasThrows() {
+            assertThatThrownBy(() -> builder.parse(new HashMap<>() {{
+                put("d::name", "a");
+                put("d::type", "b");
+            }}, null)).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    /**
      * 正交维度（od 解析）：
      *   D1 值类型:   1=不传  2=String  3=List
      *   D2 方向:     1=升序(无前缀)  2=降序(- 前缀)  3=升降混合

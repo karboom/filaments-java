@@ -3,6 +3,7 @@ import com.vanniktech.maven.publish.DeploymentValidation
 plugins {
     id("java-library")
     id("com.vanniktech.maven.publish") version "0.37.0"
+    id ("io.freefair.lombok") version "9.5.0"
 }
 
 group = "io.github.karboom"
@@ -19,12 +20,7 @@ dependencies {
     api("am.ik.yavi:yavi:0.17.2")
 
     implementation("cn.hutool:hutool-all:5.8.48")
-    // 内部字段访问，不出现在公开签名
-    implementation("com.esotericsoftware:reflectasm:1.11.9")
     implementation("net.postgis:postgis-jdbc:2025.1.1")
-
-    compileOnly("org.projectlombok:lombok:1.18.48")
-    annotationProcessor("org.projectlombok:lombok:1.18.48")
 
     testImplementation(platform("org.junit:junit-bom:5.14.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -33,8 +29,6 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.27.7")
     testImplementation("org.postgresql:postgresql:42.7.14")
 
-    testCompileOnly("org.projectlombok:lombok:1.18.48")
-    testAnnotationProcessor("org.projectlombok:lombok:1.18.48")
 }
 
 

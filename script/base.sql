@@ -25,3 +25,10 @@ CREATE TABLE IF NOT EXISTS "user_mini_pk" (
     uid BIGINT PRIMARY KEY,
     name VARCHAR(255) NOT NULL
 );
+
+-- 驼峰列名测试表：对应 FilamentsConfigTest（columnNaming=CAMEL）
+CREATE TABLE IF NOT EXISTS "filaments_camel" (
+    "userId" BIGINT PRIMARY KEY,
+    "wechatId" VARCHAR(20) NOT NULL,
+    "createTime" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

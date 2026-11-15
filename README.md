@@ -62,7 +62,7 @@
    核心入口只有 `create / updateByIds / deleteByIds / get / pages / getByIds / aggregation` 几个方法，第一个参数统一是 `DSLContext`。AI 只需少量示例（few-shot）即可覆盖整个库的用法，生成的代码风格高度一致、可预测。
 
 5. **安全边界清晰**
-   所有值走占位符绑定，注入面收敛在字段名/函数白名单内，LLM 生成的查询不会引入拼接式 SQL 注入风险，适合作为"让 AI 直接操作数据查询"的落地层。
+   所有值走占位符绑定；字段名/排序键/聚合分组经标识符白名单校验，函数链仅允许 `FilamentsConfig.sqlFuncList` 白名单函数且参数限数字字面量，JSON 路径段逐段校验并转义。非法输入直接抛错而非拼入 SQL，LLM 生成的查询不会引入拼接式 SQL 注入风险，适合作为"让 AI 直接操作数据查询"的落地层。
 
 ## 快速开始
 
@@ -125,6 +125,10 @@ var page = userFilament.pages(db, new HashMap(){{
 字段名|函数(参数)...|操作符=数值
 ```
 
+> 约束：字段名须为合法标识符（点分路径如 `data.type` 逐段校验）；函数必须命中白名单 `FilamentsConfig.sqlFuncList`（默认内置 PG 常用函数集 `FilamentsConfig.PG_FUNCS`，另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS` 预设可整体替换或自行增删），参数仅支持数字字面量；违反即抛错。
+
+> 命名约定：条件键、`rt`、`od`、分组字段、主键 `pk` 一律按「驼峰 → 小写下划线」归一化（`wechatId` → `wechat_id`，连续大写同样降格：`userID` → `user_id`），因此写驼峰或写库里的下划线名都指向同一列。点分 jsonb 路径的**段 0 按列名规则**归一化，其后的路径段按 JSON 键规则归一化，所以 `extra.totalCount` 与 `extra.total_count` 命中同一个键。两套规则都可配置，见[命名与配置](#命名与配置)。
+
 #### 示例
 
 | 查询字符串                                        | 对应SQL                                                     |
@@ -136,6 +140,24 @@ var page = userFilament.pages(db, new HashMap(){{
 | ?data.type=dog                                    | ``` where `data`->'$.type' = 'dog' ```                      |
 | ?data[0].type=cat                                 | ``` where `data`->'$[0].type' = 'cat' ```                   |
 | ?data[0]=dog                                      | ``` where `data`->'$[0]' = 'dog' ```                        |
+
+#### 条件别名
+
+`lg` 表达式里 `(` `)` `!` `,` `=` 全是保留字符，而函数链键（如 `extra.age|substr(1,2)|ge`）本身含括号和逗号；同时 Map 的键必须唯一，同一表达式需要出现两次（不同值或不同操作符）时会互相覆盖。
+
+因此条件键可以加别名前缀：`别名::字段|函数链|操作符`，`lg` 里只写短别名，值仍留在参数中。
+
+```java
+var users = filaments.get(db, new HashMap<>() {{
+    put("lowAge::extra.age|substr(1,2)|ge", "5");   // substr(extra->>'$.age', 1, 2) >= 5
+    put("highAge::extra.age|substr(3,4)|le", "10"); // 同字段不同函数链
+    put("dup1::name|lower", "ann");                 // 同一表达式出现两次（隐式 EQ）
+    put("dup2::name|lower", "bob");
+    put("lg", "(!(lowAge,highAge),dup1,dup2)");     // (lowAge OR highAge) AND dup1 AND dup2
+}});
+```
+
+> 约束：`lg` 表达式整体必须由一对括号包裹；别名须为合法标识符（字母/下划线开头，仅字母数字下划线）且不得重复；引用不存在或非法的别名会抛错。别名只用于参数寻址，永不参与 SQL 拼接。
 
 ### 操作符
 
@@ -153,6 +175,64 @@ var page = userFilament.pages(db, new HashMap(){{
 | ?id&#124;not_like=k%     | nlk  | ```  where `id` not like 'k%' ```       |
 | ?id&#124;is_null=1       | nl   | ```  where `id` is null ```             |
 | ?id&#124;is_not_null=1   | nnl  | ```  where `id` is not null ```         |
+
+### 命名与配置
+
+所有可调项都在 `FilamentsConfig` 上（旧的 `Filaments` 静态兼容字段已全部移除）。
+
+模型字段名到「数据库列名」和「JSON 键名」的转换由**同一个命名函数**控制（一个系统内风格统一）。规则本身就是函数——库提供 `snake` / `camel` / `lower` / `asIs` 四个备选实现，可整体替换，也可组合出自定义规则：
+
+```java
+// FilamentsConfig.snake / camel / lower / asIs   （asIs = 声明什么用什么）
+
+// 配置是普通对象：自己 new 一份传给各实例；多实例传同一个对象即等效"全局配置"
+// （库不再提供 FilamentsConfig.defaults 静态实例；不传 config 的实例各持一份内置默认）
+var config = new FilamentsConfig();
+config.naming = FilamentsConfig::camel;
+// 自定义组合示例：统一加表前缀
+// config.naming = s -> "t_" + FilamentsConfig.snake(s);
+
+var filament = new Filaments<User>("filaments_camel", config) {
+    @Override
+    public ValidatorBuilder<User> initValidator() { ... }
+};
+```
+
+| 函数 | `wechatId` | `userID` | `wechat_id` | JSON 侧对应 Jackson 策略 |
+| --- | --- | --- | --- | --- |
+| `snake`（默认） | `wechat_id` | `user_id` | `wechat_id` | `SNAKE_CASE` |
+| `camel` | `wechatId` | `userId` | `wechatId` | `LOWER_CAMEL_CASE` |
+| `asIs` | `wechatId` | `userID` | `wechat_id` | 不改写 |
+| `lower` | `wechatid` | `userid` | `wechat_id` | 全小写 |
+
+- `naming` 作用于：条件键、`rt`、`od`、分组字段、主键 `pk`、`create`/`update` 的列名、聚合别名，以及 jsonb 查询路径段（`extra.xxx` 的 `xxx`）。
+- 聚合别名由列名派生：`count(wechatId)` → `countWechatId`，`countDistinct(id)` → `countDistinctId`。
+- 换 `naming` 不会迁移存量 jsonb / 列名数据；旧数据请用实例级配置或一次性刷数据。
+- 序列化只认 `config.mapper` 这一个实例（默认内置 SNAKE 风格）。库不提供 mapper 工厂：换风格自己 `JsonMapper.builder().propertyNamingStrategy(...).disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE).build()`——disable 别丢，否则带 offset 的时间会被静默调到本地时区；并与 `naming` 配对（默认同为 snake，天然一致）。
+
+其余可调项（都在同一个 config 对象上，按需共享或各建各的）：
+
+| 配置项 | 默认值 | 作用 |
+| --- | --- | --- |
+| `nameSplitter` | `"\|"` | 查询语法里 `字段\|函数\|操作符` 的分隔符 |
+| `aliasSplitter` | `"::"` | 条件别名寻址分隔符（`别名::字段\|函数\|操作符`），永不进 SQL |
+| `sqlFuncList` | `PG_FUNCS`（另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS`） | 函数链与聚合函数白名单，可整体换预设或增删 |
+| `page` / `pageSize` | 1 / 20 | `pages()` 未传 `p` / `pc` 时的默认分页 |
+
+### 类型与 JSON 约定
+
+值不靠手工 setter/getter 映射：构造期把模型字段分类后，写侧 JSON 字段序列化成 JSON 文本、其余原样绑定；读侧（doQuery）按列直接映射进对象——不再有"整行转 JSON 再解析"的往返，只有 JSON 字段的值会过一遍 Jackson。模型字段禁止声明为 `Object`（构造期抛错）：jsonb 请用 `Map<String,Object>` 或具体 POJO。JSON 键名的风格由 [`naming`](#命名与配置)（路径段）与 `config.mapper`（序列化）配对决定（默认同为 snake）。
+
+| 模型字段类型 | 写入 | 读取 |
+| --- | --- | --- |
+| `String` / 数字 / `BigDecimal` / `java.time.*` / `boolean` / `byte[]` / `UUID` | 原样绑定（不套 JSON） | 列级映射：可赋值直取，否则 Jackson/jOOQ 单值转换；时间列走 jOOQ 转换器 |
+| `java.util.Date` / `java.sql.*` 声明的时间字段 | 原样绑定 | 读取时响亮报错（timestamptz 的 offset 语义无法无损落到这些类型，请改用 `java.time`） |
+| 枚举 | 存 `name()`（如 `A`） | `A` → 枚举 |
+| `List` / `Set` / `Map` / 嵌套对象 | 序列化成 JSON 文本写入（构造期判定，不看运行时值） | 投影带 JSONB 类型/元数据，直接得到对象/数组节点 |
+
+> JSON 与否完全由构造期的字段分类决定：`rt` 投影会据此补 `JSONB` 类型，读取直接拿到对象/数组节点，不再做字符串嗅探；文本列里恰好以 `{`、`[` 开头的值（如 `{"a":1}`）始终原样读出，不会让整个查询失败。
+
+> 库里已有的驼峰键 jsonb（别的系统写的）在默认 `SNAKE` 下会被静默忽略（读成 null）：给该表配一个 `naming = FilamentsConfig::asIs`（或 `::camel`）的实例即可对上——注意命名已合并，列名解析会一并改变，仅适用于整库同风格的表。显式 `@JsonProperty("originalKey")` 命名的字段不受命名策略影响（Jackson 3 语义）。
 
 ## 高级用法
 
