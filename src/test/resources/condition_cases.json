@@ -1,0 +1,10 @@
+[
+  {"label": "eq-plain",          "query": {"rt": "id,name", "name": "x"}},
+  {"label": "in-list",           "query": {"rt": "id,name", "id|in": ["a", "b"]}},
+  {"label": "like-func",         "query": {"rt": "id,name", "name|lower|like": "a"}},
+  {"label": "between-dotted",    "query": {"rt": "id,name", "address.age|between": [1, 5]}},
+  {"label": "intersect",         "query": {"rt": "id,name", "tags|intersect": "a,b"}},
+  {"label": "or-lg",             "query": {"rt": "id,name", "lg": "!(a,b)", "a::name": "x", "b::age|gt": 3}},
+  {"label": "ge-plain",          "query": {"rt": "id,name", "age|ge": 10}},
+  {"label": "desc-order",        "query": {"rt": "id,name", "od": "-age"}}
+]
