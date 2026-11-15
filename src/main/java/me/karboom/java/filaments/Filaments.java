@@ -4,12 +4,8 @@ import am.ik.yavi.builder.ValidatorBuilder;
 import am.ik.yavi.core.ConstraintPredicates;
 
 import cn.hutool.core.util.StrUtil;
-import com.esotericsoftware.reflectasm.FieldAccess;
 
 import tools.jackson.databind.*;
-import tools.jackson.databind.cfg.DateTimeFeature;
-import tools.jackson.databind.json.JsonMapper;
-import tools.jackson.databind.node.ArrayNode;
 import lombok.SneakyThrows;
 import me.karboom.java.filaments.spec.FieldCondition;
 import me.karboom.java.filaments.spec.LogicNode;
@@ -18,11 +14,13 @@ import me.karboom.java.filaments.spec.SelectSpec;
 import org.jooq.*;
 import org.jooq.Record;
 
+import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.*;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import java.util.regex.Pattern;
 
 import static org.jooq.impl.DSL.*;
 
@@ -31,44 +29,122 @@ import static org.jooq.impl.DSL.*;
  */
 
 public abstract class Filaments<T> {
-    public static List<String> KEEP_FIELDS = List.of();
-    public static List<String> SQL_FUNC_LIST = List.of("date", "substr", "count");
-    public static String NAME_SPLITTER = "|";
-    public static Number DEFAULT_QUERY_P = 1;
-    public static Number DEFAULT_QUERY_PC = 20;
 
-    // 这个mapper用来处理json嵌套对象的转换
-    public static ObjectMapper mapper;
-    static {
-        // Jackson 3: 未知属性忽略、空 bean 不报错均为默认行为；java.time 支持已内置，无需 jsr310 模块
-        mapper = JsonMapper.builder()
-                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                // Jackson 3 默认会把带 offset 的时间调到上下文时区，保持原行为：保留原始 offset
-                .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
-                .build();
-    }
+    // region 成员变量（static -> private -> public）
+
+    // 合法 SQL 标识符 / jsonb 路径段（防注入：拒绝引号、括号、空白等结构字符）
+    static final Pattern IDENT_PATTERN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+
 
     private final Class<T> dataClass;
-    private final FieldAccess access;
 
+    /**
+     * 模型字段索引：归一化列名 -> 字段，构造期按当时的 config 一次性建好。
+     */
+    private final Map<String, java.lang.reflect.Field> modelFields;
+
+    /**
+     * 应按 JSON 存取的字段（归一化列名集合），构造期按声明类型分类：
+     * 即 {@link #isJsonType} 判真的字段（POJO/List/Map/数组）。
+     * 写侧（create/update）据此序列化，读侧 rt 投影据此补 JSONB 类型；
+     * 声明为 Object 的字段在构造期直接拒绝——存成标量还是 JSON 说不清，必须用具体类型。
+     */
+    private final Set<String> jsonFields;
+
+    /** 语法解析器，构造期随 config 绑定，之后不可变 */
+    protected final SelectSpecBuilder specBuilder;
 
     public String table;
-    public String pk = "id";
 
+    /** 主键的模型字段名；默认为 "id"，不同主键经构造函数传入 */
+    public final String pk;
 
+    /**
+     * 命名等配置。构造期定死，之后不可更换；不传则每个实例各持一份内置默认配置，
+     * 自定义时把 {@code new FilamentsConfig()} 经构造函数传入（多实例共享一份就传同一对象）。
+     */
+    public final FilamentsConfig config;
+
+    // endregion
+
+    /**
+     * 构造期划分 {@link #jsonFields} 的谓词：除 String/数字包装/时间/UUID/byte[]、
+     * 枚举、{@code java.util/sql} 日期之外的类型（POJO、集合、Map、数组）按 JSON 字段对待。
+     * 基本类型（int、long 等）不在普通值之列——模型请用封装类；Object 声明已在构造期拒绝。
+     */
+    static boolean isJsonType(Class<?> type) {
+        if (type.isEnum() || type == java.util.Date.class || type == java.sql.Timestamp.class
+                || type == java.sql.Time.class || type == java.sql.Date.class
+                || type == org.jooq.JSON.class || type == org.jooq.JSONB.class) {
+            // jOOQ JSON/JSONB 是可直接绑定的值，不算 JSON 字段——否则会被二次序列化变味
+            return false;
+        }
+        return !Set.of(String.class, Boolean.class, Character.class, Byte.class,
+                Short.class, Integer.class, Long.class, Float.class, Double.class,
+                BigDecimal.class, BigInteger.class, byte[].class, UUID.class,
+                java.time.LocalDate.class, java.time.LocalTime.class, java.time.LocalDateTime.class,
+                java.time.OffsetDateTime.class, java.time.OffsetTime.class,
+                java.time.ZonedDateTime.class, java.time.Instant.class).contains(type);
+    }
 
     // region 基础
     public Filaments(String table) {
+        this(table, "id", new FilamentsConfig());
+    }
+
+    /** 主键不叫 "id" 的表 */
+    public Filaments(String table, String pk) {
+        this(table, pk, new FilamentsConfig());
+    }
+
+    /**
+     * 实例级配置入口（多库 / 遗留命名不同的表）
+     */
+    public Filaments(String table, FilamentsConfig config) {
+        this(table, "id", config);
+    }
+
+    /** 全参入口：表名 + 主键模型字段名 + 配置 */
+    public Filaments(String table, String pk, FilamentsConfig config) {
         this.table = table;
+        this.pk = pk;
+        this.config = config;
+
+        // 构造期就绑好配置，子类直接用 specBuilder 字段也不会拿到 null
+        this.specBuilder = new SelectSpecBuilder(config);
 
         ParameterizedType superClass = (ParameterizedType) getClass().getGenericSuperclass();
 
         this.dataClass = (Class<T>) superClass.getActualTypeArguments()[0];
-        this.access =  FieldAccess.get(this.dataClass);
 
+        // 列名 -> 字段索引 + JSON 字段集：config 构造期定死，建一次即可
+        var indexed = new HashMap<String, java.lang.reflect.Field>();
+        var json = new HashSet<String>();
+        for (var rf : this.dataClass.getDeclaredFields()) {
+            if (Modifier.isStatic(rf.getModifiers())) {
+                continue;
+            }
+            if (rf.getType() == Object.class) {
+                throw new Error("模型字段 " + rf.getName() + " 声明为 Object：jsonb 字段请用具体类型（POJO/List/Map）");
+            }
+            var col = config.naming.apply(rf.getName());
+            indexed.put(col, rf);
+            if (isJsonType(rf.getType())) {
+                json.add(col);
+            }
+        }
+        this.modelFields = Map.copyOf(indexed);
+        this.jsonFields = Set.copyOf(json);
+    }
 
-
-
+    /**
+     * 按模型字段名读字段值（约束名用的是声明字段名，不走列名归一化）。
+     */
+    @SneakyThrows
+    private Object modelValue(T data, String fieldName) {
+        var rf = dataClass.getDeclaredField(fieldName);
+        rf.setAccessible(true);
+        return rf.get(data);
     }
 
     public T before (T data) {
@@ -83,26 +159,89 @@ public abstract class Filaments<T> {
     abstract public ValidatorBuilder<T> initValidator();
 
 
-    /**
-     * 过滤字段包裹字符串, TODO 除了下划线，其他字符全部删掉
-     */
-    private String fieldNameSafe(String fieldName, String wrap) {
-        return fieldName.replaceAll(wrap, "");
-    }
     private String fieldNameSafe(String fieldName) {
-        return this.fieldNameSafe(fieldName, "`");
+        return fieldName.replace("`", "");
     }
 
     /**
-     * 过滤函数名
+     * 过滤函数名：不在白名单内直接拒绝（此前返回 "" 会拼出坏 SQL）
      */
     private String funcNameSafe(String funcName) {
-        for (String func : Filaments.SQL_FUNC_LIST) {
+        for (String func : config.sqlFuncList) {
             if (funcName.toLowerCase().contains(func)) {
                 return func;
             }
         }
-        return "";
+        throw new Error("不支持的聚合函数: " + funcName);
+    }
+
+    /**
+     * 校验字段标识符（支持点分 jsonb 路径），任何一段含非法字符直接拒绝
+     */
+    static List<String> identsSafe(String fieldName) {
+        var segments = StrUtil.split(fieldName, '.');
+        for (String seg : segments) {
+            if (!IDENT_PATTERN.matcher(seg).matches()) {
+                throw new Error("非法字段名: " + fieldName);
+            }
+        }
+        return segments;
+    }
+
+    /**
+     * 模型字段名 -> 列引用：列名进 jOOQ 的唯一合法通道（标识符，而非 plain SQL 拼接）。
+     * 列名由 {@link FilamentsConfig#naming} 归一化：默认 {@code snake} 驼峰转下划线并统一小写——
+     * hutool 的 toUnderlineCase 不降格连续大写（userID -> user_ID、USER -> USER），而 jOOQ 经
+     * name() 加引号是精确匹配，与建表惯用的全小写列名不符会直接报 column does not exist；
+     * 输入已是目标风格时幂等（create_time -> create_time）。
+     */
+    private Field<Object> columnRef(String fieldName) {
+        return field(name(config.naming.apply(fieldName)));
+    }
+
+    /** 当前表引用 */
+    private Table<Record> tableRef() {
+        return table(name(this.table));
+    }
+
+    /**
+     * 普通列表达式：白名单校验 + config.naming 归一化，以 name() 标识符引用（加引号，非 plain SQL 裸拼）。
+     */
+    private String columnExpr(String fieldName) {
+        if (!IDENT_PATTERN.matcher(fieldName).matches()) {
+            throw new Error("非法字段名: " + fieldName);
+        }
+        return name(config.naming.apply(fieldName)).toString();
+    }
+
+    /**
+     * 点分 jsonb 路径表达式：逐段过标识符白名单（identsSafe），
+     * 段 0 按列处理（复用 {@link #columnExpr}），其余段按 JSON 键归一化拼进 {@code #>> '{...}'}。
+     * 「写进去的键」与「查询用的键」一致仍需 config.mapper 与 config.naming 配对。
+     */
+    private String jsonKeyExpr(String fieldName) {
+        var segments = identsSafe(fieldName);
+        var path = segments.subList(1, segments.size()).stream().map(config.naming).toList();
+        return "%s #>> '{%s}'".formatted(
+                columnExpr(segments.get(0)),
+                String.join(",", path));
+    }
+
+
+    /**
+     * 聚合列别名 = 函数名 + 各命名段首字母大写的拼接（{@code count + wechat_id -> countWechatId}）。
+     * pages() 取 count 时走同一个 helper，保证两处不会漂移。
+     * 不直接用 hutool toCamelCase 是因为它会把驼峰段整体降格（countDistinct_id -> countdistinctId）。
+     */
+    private String aggAlias(String funcName, String fieldName) {
+        var sb = new StringBuilder(funcName);
+        for (var seg : config.naming.apply(fieldNameSafe(fieldName)).split("[._]")) {
+            if (seg.isEmpty()) {
+                continue;
+            }
+            sb.append(Character.toUpperCase(seg.charAt(0))).append(seg.substring(1));
+        }
+        return sb.toString();
     }
 
     // endregion
@@ -124,7 +263,7 @@ public abstract class Filaments<T> {
         newList.removeIf(p -> {
             // 解决嵌套约束条件问题
             var rootObjKey = StrUtil.split(p.name(), ".").get(0);
-            return access.get(data, rootObjKey) == null;
+            return modelValue(data, rootObjKey) == null;
         });
 
         list.set(newBuilder, newList);
@@ -132,29 +271,34 @@ public abstract class Filaments<T> {
         return newBuilder;
     }
 
+    /**
+     * 模型值 -> 可绑库的值，按构造期的 {@link #jsonFields} 判定，不看运行时值的来历：
+     * JSON 字段必为 POJO/集合/Map，直接序列化；
+     * 枚举按 {@code name()} 绑定（旧值嗅探曾把它序列化成带引号的 "\"A\""，varchar(1) 直接超长）；
+     * 其余标量（含日期、jOOQ JSON/JSONB——其列声明在 {@link #isJsonType} 中已划入非 JSON）原样绑定。
+     */
     @SneakyThrows
-    public Object handleJson(Object value) {
-        if (value instanceof List || value instanceof Set || value instanceof Map || value.getClass().getName().startsWith(dataClass.getName()) ||
-                value.getClass().getClassLoader() != null) {
-            value = mapper.writeValueAsString(value);
+    private Object handleJson(String col, Object value) {
+        if (jsonFields.contains(col)) {
+            return config.mapper.writeValueAsString(value);
         }
-        return value;
+        return value instanceof Enum<?> e ? e.name() : value;
     }
 
     /**
      * 新增数据
      *
      */
+    @SneakyThrows
     public Integer create(DSLContext db, List<T> data) {
         var objectFields = List.of(this.dataClass.getDeclaredFields());
 
-        // Todo 字段名增加引号
         var dbFields = objectFields.stream()
-                .map(r -> field(StrUtil.toUnderlineCase(r.getName())))
+                .map(r -> columnRef(r.getName()))
                 .toList();
 
         var stat = db
-                .insertInto(table(name(this.table)))
+                .insertInto(tableRef())
                 .columns(dbFields)
                 ;
 
@@ -176,14 +320,12 @@ public abstract class Filaments<T> {
 
             var values = new ArrayList<>();
             for (var field : objectFields) {
-                var value = access.get(row, field.getName());
+                field.setAccessible(true);
+                var value = field.get(row);
                 if (value == null) {
                     values.add(defaultValue());
                 } else {
-                    // 处理json
-                    value = handleJson(value);
-
-                    values.add(value);
+                    values.add(handleJson(config.naming.apply(field.getName()), value));
                 }
             }
 
@@ -203,8 +345,8 @@ public abstract class Filaments<T> {
 
     // region 删除
     public void deleteByIds(DSLContext db, List<String> ids) {
-        DeleteQuery<Record> q = db.deleteQuery(table(name(this.table)));
-        q.addConditions(trueCondition().and(field(name(this.pk)).in(ids)));
+        DeleteQuery<Record> q = db.deleteQuery(tableRef());
+        q.addConditions(trueCondition().and(columnRef(this.pk).in(ids)));
         q.execute();
     }
 
@@ -215,29 +357,28 @@ public abstract class Filaments<T> {
     // endregion
 
     // region 修改
+    @SneakyThrows
     public void updateByIds(DSLContext db, List<String> ids, T data) {
         // Todo 补充所有的name函数?
-        UpdateQuery<Record> q = db.updateQuery(table(name(this.table)));
+        UpdateQuery<Record> q = db.updateQuery(tableRef());
         var fields = this.dataClass.getDeclaredFields();
 
         for (var field : fields) {
             field.setAccessible(true);
             String name = field.getName();
 
-            // 主键不参与更新，避免批量更新时 SET 主键导致冲突
-            if (StrUtil.toUnderlineCase(name).equals(StrUtil.toUnderlineCase(this.pk))) {
+            // 主键不参与更新，避免批量更新时 SET 主键导致冲突（两边都归一化后再比）
+            if (config.naming.apply(name).equals(config.naming.apply(this.pk))) {
                 continue;
             }
 
-            var value = access.get(data, field.getName());
+            var value = field.get(data);
 
             if (value != null) {
-                value = handleJson(value);
-
-                q.addValue(field(name(StrUtil.toUnderlineCase(name))), value);
+                q.addValue(columnRef(name), handleJson(config.naming.apply(name), value));
             }
         }
-        q.addConditions(trueCondition().and(field(name(this.pk)).in(ids)));
+        q.addConditions(trueCondition().and(columnRef(this.pk).in(ids)));
 
         q.execute();
     }
@@ -249,7 +390,6 @@ public abstract class Filaments<T> {
 
 
     // region 查询共用
-    protected final SelectSpecBuilder specBuilder = new SelectSpecBuilder();
 
     protected SelectQuery<Record> buildSelect(DSLContext db, Map<String, Object> query, SelectQuery<Record> sub) {
         SelectQuery<Record> q = db.selectQuery();
@@ -278,10 +418,10 @@ public abstract class Filaments<T> {
 
     protected SelectQuery<Record> buildSub(SelectQuery<Record> q, SelectQuery<Record> sub) {
         if (sub != null) {
-            sub.addFrom(table(name(this.table)));
+            sub.addFrom(tableRef());
             q.addFrom(table(sub));
         } else {
-            q.addFrom(table(name(this.table)));
+            q.addFrom(tableRef());
         }
         return q;
     }
@@ -291,7 +431,11 @@ public abstract class Filaments<T> {
         if (fields != null && !fields.isEmpty()) {
             if (fields.size() == 1) throw new RuntimeException("至少返回两个字段");
             for (String part : fields) {
-                q.addSelect(field(name(StrUtil.toUnderlineCase(part))));
+                var col = config.naming.apply(fieldNameSafe(part));
+                // JSON 字段（构造期分类）补 JSONB 类型，统一取值形态；varchar 存 JSON 文本的列
+                // 也只是 JSONB.valueOf 包装，无 DB cast 风险。
+                // 时间列无需补类型：doQuery 已改列级映射（jOOQ 转换器），旧"文本退化"TODO 就此关闭。
+                q.addSelect(jsonFields.contains(col) ? field(name(col), JSONB.class) : columnRef(col));
             }
         } else {
             q.addSelect();
@@ -302,10 +446,13 @@ public abstract class Filaments<T> {
         List<OrderSpec> orderBy = spec.getOrderBy();
         if (orderBy != null) {
             for (OrderSpec os : orderBy) {
+                // 防注入：原实现 field(String) 裸拼用户可控排序键（@PlainSQL）
+                var sortKey = fieldNameSafe(os.getField());
+                var sortField = field(sortKey.contains(".") ? jsonKeyExpr(sortKey) : columnExpr(sortKey));
                 if (OrderSpec.DESC.equals(os.getDirection())) {
-                    q.addOrderBy(field(os.getField()).desc());
+                    q.addOrderBy(sortField.desc());
                 } else {
-                    q.addOrderBy(field(os.getField()).asc());
+                    q.addOrderBy(sortField.asc());
                 }
             }
         }
@@ -343,11 +490,9 @@ public abstract class Filaments<T> {
         var value = fc.getValues().toArray();
         var fieldName = fc.getField();
 
-        var sqlField = name(fieldNameSafe(fieldName)).toString();
-        if (fieldName.contains(".")) {
-            var segments = StrUtil.split(fieldName, '.');
-            sqlField = "%s #>> '{%s}'".formatted(segments.get(0), String.join(",", segments.subList(1, segments.size())));
-        }
+        // 防注入：普通列走 name() 引用 + 列名归一化；jsonb 路径段级白名单校验（原实现段0裸拼、路径段未转义）
+        var cleaned = fieldNameSafe(fieldName);
+        var sqlField = cleaned.contains(".") ? jsonKeyExpr(cleaned) : columnExpr(cleaned);
 
         String funcChainResult = specBuilder.buildFuncChain(sqlField, fc.getFuncChain());
 
@@ -364,9 +509,18 @@ public abstract class Filaments<T> {
             case FieldCondition.LIKE -> condition(String.format("%s like %s", funcChainResult, specBuilder.buildHolder(value, ",")), value);
             case FieldCondition.NOT_LIKE -> condition(String.format("%s not like %s", funcChainResult, specBuilder.buildHolder(value, ",")), value);
             case FieldCondition.INTERSECT -> {
-                var jsonCond = Stream.of(value).map(v -> "@ == \"%s\"".formatted(v)).collect(Collectors.joining(" || "));
-                var str = "jsonb_path_exists(%s, '$[*] ? (%s)')".formatted(sqlField, jsonCond);
-                yield condition(str, value);
+                // 值不进 SQL 文本：经 jsonb_path_exists 的 vars 绑定参数传入（jsonpath 里用 @ == $qN 引用）
+                var preds = new ArrayList<String>();
+                var vars = new ArrayList<String>();
+                var binds = new Object[value.length];
+                for (var i = 0; i < value.length; i++) {
+                    preds.add("@ == $q" + i);
+                    vars.add("'q%d', {%d}".formatted(i, i));
+                    binds[i] = String.valueOf(value[i]);
+                }
+                var str = "jsonb_path_exists(%s, '$[*] ? (%s)', jsonb_build_object(%s))"
+                        .formatted(sqlField, String.join(" || ", preds), String.join(", ", vars));
+                yield condition(str, binds);
             }
             case FieldCondition.EQ -> condition(String.format("%s = ?", funcChainResult), value);
             default -> throw new IllegalStateException("Unknown operator: " + fc.getOperator());
@@ -374,36 +528,79 @@ public abstract class Filaments<T> {
     }
 
 
+    /**
+     * 列级直接映射（无行级 JSON 往返），挂在 fetch(RecordMapper) 上单趟完成：
+     * 逐行 Record -> T，不攒整批 Result<Record>。每列按能力阶梯取值：
+     *   1. JSON 字段（{@link #jsonFields}）：文本（JSON/JSONB/String 三形态）经 Jackson readValue，
+     *      已是结构形态的走 convertValue；
+     *   2. 时间家族：jOOQ 转换器 record.get(i, type)；util/sql 日期在预计算段即响亮拒绝；
+     *   3. 运行时值已可赋值：直取；
+     *   4. 其余（数字加宽、字符串转枚举等）：Jackson convertValue 单值转换。
+     * 模型里没有的列（聚合别名等）跳过；null 不写字段，保持模型默认值。
+     */
     @SneakyThrows
     protected List<T> doQuery(SelectQuery<Record> q, Boolean lock) {
         q.setForUpdate(lock);
 
-        // Todo 这里如果是性能热点，需要选用另外的转换方式
-        // 先转json再转对象
-        var json = q.fetch().formatJSON(new JSONFormat()
-                .header(false)
-                .recordFormat(JSONFormat.RecordFormat.OBJECT));
-
-        // 为了兼容PG数据库指定返回字段的时候，json类型无法被正确识别
-        // 仅处理文本节点：jOOQ 会把 jsonb 列直接嵌入为对象/数组节点（Jackson3 下 asString 会抛异常）
-        var arrayNode = mapper.readValue(json, ArrayNode.class);
-        for (var obj : arrayNode) {
-            for (var field : obj.properties()) {
-                var node = field.getValue();
-                if (!node.isString()) {
-                    continue;
+        // 列策略预计算：每查询一次把"这列怎么取值"编译成取值函数（而不是每行重跑分类逻辑），
+        // 同时读投影声明，fetch 之前就能拒绝非法时间类型
+        var mapper = config.mapper;
+        var rowFields = q.getSelect().toArray(new Field<?>[0]);
+        int n = rowFields.length;
+        var targets = new java.lang.reflect.Field[n];
+        @SuppressWarnings("unchecked")
+        var values = (java.util.function.Function<Record, Object>[]) new java.util.function.Function[n];
+        for (var i = 0; i < n; i++) {
+            var mf = modelFields.get(rowFields[i].getName());
+            targets[i] = mf;
+            if (mf == null) {
+                continue;
+            }
+            var type = mf.getType();
+            var idx = i;
+            if (jsonFields.contains(rowFields[i].getName())) {
+                // 按 String.class 取值：jOOQ 内建转换器把 JSON/JSONB/varchar 统一拆成原始文本，
+                // 不经过 org.jooq 自有 JSON 类型（拆包语义见 JsonStringProbeTest）
+                values[idx] = r -> mapper.readValue(r.get(idx, String.class), type);
+            } else if (java.time.temporal.Temporal.class.isAssignableFrom(type)) {
+                values[idx] = r -> r.get(idx, type);
+            } else {
+                if (type == java.util.Date.class || type == java.sql.Timestamp.class
+                        || type == java.sql.Time.class || type == java.sql.Date.class) {
+                    // 刻意响亮失败：util/sql 日期承载不了 timestamptz 的 offset 语义，
+                    // 任何折算路线都是按某个时区静默改值；模型请改用 java.time（见探针测试）
+                    throw new Error("时间字段 " + rowFields[idx].getName() + " 声明为 " + type.getSimpleName()
+                            + "：请改用 OffsetDateTime / Instant / LocalDateTime");
                 }
-                var value = node.asString();
-                if (value.startsWith("{") || value.startsWith("[")) {
-                    field.setValue(mapper.readValue(value, JsonNode.class));
-                }
+                values[idx] = r -> {
+                    var raw = r.get(idx);
+                    return type.isInstance(raw) ? raw : mapper.convertValue(raw, type);
+                };
             }
         }
 
-        List<T> res = mapper.convertValue(arrayNode, mapper.getTypeFactory().constructParametricType(List.class, this.dataClass));
+        var ctor = dataClass.getDeclaredConstructor();
+        ctor.setAccessible(true);
+
+        
+        // 映射挂在取数循环上：逐行 Record -> T，取值只剩查表
+        var rows = q.fetch(new RecordMapper<Record, T>() {
+            @SneakyThrows
+            @Override
+            public T map(Record record) {
+                var obj = ctor.newInstance();
+                for (var i = 0; i < n; i++) {
+                    if (targets[i] == null || record.get(i) == null) {
+                        continue;
+                    }
+                    targets[i].set(obj, values[i].apply(record));
+                }
+                return obj;
+            }
+        });
 
         // 处理after
-        return res.stream().map(this::after).toList();
+        return rows.stream().map(this::after).toList();
     }
     // endregion
 
@@ -420,13 +617,13 @@ public abstract class Filaments<T> {
     /**
      * 分页查询接口，一般用于返回给前端
      */
-    public PageResult<T> pages(DSLContext db, Map<String, Object> query) {
+    public PageResult<T> getByPages(DSLContext db, Map<String, Object> query) {
         // 不能影响外部传入的参数
         var copyQuery = new HashMap<>(query);
-        copyQuery.putIfAbsent("pc", Filaments.DEFAULT_QUERY_PC);
-        copyQuery.putIfAbsent("p", Filaments.DEFAULT_QUERY_P);
+        copyQuery.putIfAbsent("pc", config.pageSize);
+        copyQuery.putIfAbsent("p", config.page);
 
-        PageResult<T> res = new PageResult<T>();
+        PageResult<T> res = new PageResult<>();
 
         res.list = this.get(db, copyQuery);
 
@@ -434,11 +631,14 @@ public abstract class Filaments<T> {
 
             copyQuery.remove("rt");
             copyQuery.remove("od");
+            // 计数不能带分页：LIMIT/OFFSET 会作用在聚合行上，p>1 时直接查不到那行 count
+            copyQuery.remove("p");
+            copyQuery.remove("pc");
 
             var count = this.aggregation(db, Map.of("count", this.pk), copyQuery, List.of(), null);
 
-            // 与 aggregation 中的别名规则保持一致: count(字段) -> countXxx
-            var countKey = StrUtil.toCamelCase(String.format("count_%s", this.pk));
+            // 与 aggregation 中的别名规则保持一致（同一个 helper，避免两处漂移）
+            var countKey = aggAlias("count", this.pk);
             res.total = Integer.valueOf(count.getFirst().get(countKey).toString());
         }
 
@@ -448,9 +648,8 @@ public abstract class Filaments<T> {
 
     public List<T> getByIds(DSLContext db, List<String> ids, Boolean lock) {
         SelectQuery<Record> select = db.selectQuery();
-        // TODO table 函数是否安全
-        select.addFrom(table(name(this.table)));
-        select.addConditions(trueCondition().and(field(name(this.pk)).in(ids)));
+        select.addFrom(tableRef());
+        select.addConditions(trueCondition().and(columnRef(this.pk).in(ids)));
 
         return this.doQuery(select, lock);
     }
@@ -483,12 +682,32 @@ public abstract class Filaments<T> {
      * @return
      */
     public List<Map<String, Object>> aggregation (DSLContext db, Map<String, Object> target, Map<String, Object> query, List<String> group, SelectQuery sub) {
+        var base = buildAggregation(db, target, query, group, sub);
+        return base.fetch().intoMaps();
+    }
+
+    /**
+     * 聚合查询构建（独立出来便于无连接渲染验证）
+     */
+    protected SelectQuery<Record> buildAggregation(DSLContext db, Map<String, Object> target, Map<String, Object> query, List<String> group, SelectQuery sub) {
         var base = buildSelect(db, query, sub);
         base.getSelect().clear();
 
         for (var f: group) {
-            base.addGroupBy(field(f));
-            base.addSelect(field(f));
+            // 防注入：分组字段做标识符校验后用 Name 引用（原实现 field(f) 裸拼）；
+            // 必须走 field(name(...)) 而非 field(String)，否则 intoMaps 键会带上引用引号
+            var cleaned = fieldNameSafe(f);
+            Field<?> groupField;
+            if (cleaned.contains(".")) {
+                // 表达式当分组列时 intoMaps 的键是整段 SQL，用最后一个路径段（json 键）当别名
+                var segments = identsSafe(cleaned);
+                groupField = field(jsonKeyExpr(cleaned)).as(config.naming.apply(segments.getLast()));
+            } else {
+                identsSafe(cleaned);
+                groupField = columnRef(cleaned);
+            }
+            base.addGroupBy(groupField);
+            base.addSelect(groupField);
         }
 
         for (var func: target.keySet()) {
@@ -497,14 +716,17 @@ public abstract class Filaments<T> {
             for (var f: value) {
                 var fieldName = fieldNameSafe((String) f);
                 var funcName = funcNameSafe(func);
+                // 防注入：字段名段级白名单校验（原实现仅去反引号即可拼入任意 SQL）
+                identsSafe(fieldName);
+                var sqlField = fieldName.contains(".") ? jsonKeyExpr(fieldName) : columnExpr(fieldName);
 
-                var alias = StrUtil.toCamelCase(String.format("%s_%s", funcName, fieldName));
-                var fieldExpr = String.format("%s(%s)", funcName, fieldName);
+                var alias = aggAlias(funcName, fieldName);
+                var fieldExpr = String.format("%s(%s)", funcName, sqlField);
 
                 if (func.equals("countDistinct")) {
                     funcName = "count";
-                    alias = String.format("%s%s", func, StrUtil.upperFirst(fieldName));
-                    fieldExpr = String.format("%s(distinct %s)", funcName, fieldName);
+                    alias = aggAlias(func, fieldName);
+                    fieldExpr = String.format("%s(distinct %s)", funcName, sqlField);
                 }
 
                 base.addSelect(field(fieldExpr).as(alias));
@@ -512,21 +734,7 @@ public abstract class Filaments<T> {
 
         }
 
-        return base.fetch().intoMaps();
+        return base;
     }
     // endregion
-
-
-
-    public static class PageResult<T> {
-        public Integer total;
-        public List<T> list;
-    }
-
-
-    public static class Error extends RuntimeException {
-        public Error(String message) {
-            super(message);
-        }
-    }
 }
