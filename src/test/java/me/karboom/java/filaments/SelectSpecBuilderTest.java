@@ -1,6 +1,7 @@
 package me.karboom.java.filaments;
 
 import me.karboom.java.filaments.spec.FieldCondition;
+import me.karboom.java.filaments.spec.LogicNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -16,7 +17,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertAll;
 
 /**
- * SelectSpecBuilder：parse / buildValue / buildHolder / buildFuncChain / buildFieldCondition。
+ * SelectSpecBuilder：parse / parseLogic / buildValue / buildHolder / buildFuncChain / buildFieldCondition。
+ *
+ * <pre>
+ * 正交表（parseLogic：lg 表达式形态）：
+ * ┌────────────────────┬──────────────────────────┐
+ * │ 输入               │ 预期                     │
+ * ├────────────────────┼──────────────────────────┤
+ * │ !(name,age|gt)     │ OR 节点，2 个裸 token    │
+ * │ !(a,(b,c))         │ OR 嵌套 AND 子节点       │
+ * │ !                  │ 空 OR（特例展开）        │
+ * │ !(name,age|gt      │ 缺少右括号，带位置报错   │
+ * │ name)              │ 右括号多余，带位置报错   │
+ * │ (a)(b)             │ 多个顶层括号组报错       │
+ * └────────────────────┴──────────────────────────┘
+ * </pre>
  *
  * <pre>
  * 正交表（buildFieldCondition：条件 key 形态）：
@@ -106,6 +121,65 @@ class SelectSpecBuilderTest {
             assertThatThrownBy(() -> builder.parse(q))
                     .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("Unexpected value");
+        }
+    }
+
+    // endregion
+
+    // region parseLogic（括号配对）
+
+    @Nested
+    class ParseLogic {
+
+        @Test
+        void orGroupParsesBareTokens() {
+            var node = builder.parseLogic("!(name,age|gt)");
+            assertAll(
+                    () -> assertThat(node.type).isEqualTo(LogicNode.OR),
+                    () -> assertThat(node.value).containsExactly("name", "age|gt"));
+        }
+
+        @Test
+        void nestedGroupKeptAsChildReference() {
+            var node = builder.parseLogic("!(a,(b,c))");
+            var child = node.children.get(0);
+            assertAll(
+                    () -> assertThat(node.type).isEqualTo(LogicNode.OR),
+                    () -> assertThat(child.type).isEqualTo(LogicNode.AND),
+                    () -> assertThat(node.value).containsExactly("a", child),
+                    () -> assertThat(child.value).containsExactly("b", "c"));
+        }
+
+        @Test
+        void bangShorthandExpandsToEmptyOr() {
+            var node = builder.parseLogic("!");
+            assertAll(
+                    () -> assertThat(node.type).isEqualTo(LogicNode.OR),
+                    () -> assertThat(node.value).isEmpty());
+        }
+
+        @Test
+        void unclosedParenThrowsWithPosition() {
+            // 漏右括号若放行，括号内容进不了 value，! 的 OR 语义会被静默降级为顶层 AND
+            assertThatThrownBy(() -> builder.parseLogic("!(name,age|gt"))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("缺少右括号")
+                    .hasMessageContaining("位置 1");
+        }
+
+        @Test
+        void extraParenThrowsWithPosition() {
+            assertThatThrownBy(() -> builder.parseLogic("name)"))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("右括号多余")
+                    .hasMessageContaining("位置 4");
+        }
+
+        @Test
+        void multipleTopLevelGroupsRejected() {
+            assertThatThrownBy(() -> builder.parseLogic("(a)(b)"))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("多个顶层括号组");
         }
     }
 

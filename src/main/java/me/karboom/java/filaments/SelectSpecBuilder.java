@@ -342,9 +342,14 @@ public class SelectSpecBuilder {
     }
 
     /**
-     * 字符串内容为查询key的索引从0开始计算
-     * @param input
-     * @return
+     * 解析 lg 逻辑表达式为条件树，字符串内容为查询 key 的索引从 0 开始计算。
+     * <p>括号必须严格配对且只允许一个顶层组：漏右括号时括号内容只积累在 str 里、
+     * 永远进不了 value，外层会把这些条件静默降级为顶层 AND（! 的 OR 语义被吞）；
+     * 多右括号会 pop 掉 root 后 peek 抛裸 EmptyStackException。两种都在这一步
+     * 带位置信息拒绝，绝不带着被改写的语义往下走。
+     *
+     * @param input lg 表达式字符串
+     * @return 顶层 LogicNode
      */
     public LogicNode parseLogic(String input) {
         if (input.equals("!")) {
@@ -355,6 +360,9 @@ public class SelectSpecBuilder {
         LogicNode current = root;
         Stack<LogicNode> stack = new Stack<>();
         stack.push(root);
+        /** 与 stack 平行：每个未闭合 '(' 在 input 中的位置，报错时能指到具体括号 */
+        Stack<Integer> openPositions = new Stack<>();
+        openPositions.push(-1);
 
         for (int i = 0; i < input.length(); i++) {
             char charAt = input.charAt(i);
@@ -369,8 +377,12 @@ public class SelectSpecBuilder {
                 current.str += "?" + (current.children.size() - 1);
 
                 stack.push(node);
+                openPositions.push(i);
                 current = node;
             } else if (charAt == ')') {
+                if (stack.size() == 1) {
+                    throw new FilamentsError("lg 表达式右括号多余: %s（位置 %d）".formatted(input, i));
+                }
                 Set<String> allChild = new HashSet<>();
                 for (String key : current.str.split(",")) {
                     if (key.isEmpty()) continue;
@@ -397,12 +409,22 @@ public class SelectSpecBuilder {
                 current.allChild = new ArrayList<>(allChild);
 
                 stack.pop();
+                openPositions.pop();
                 current = stack.peek();
             } else {
                 if (charAt != '!') {
                     current.str += charAt;
                 }
             }
+        }
+
+        if (stack.size() > 1) {
+            throw new FilamentsError("lg 表达式缺少右括号: %s（未闭合的左括号位于位置 %d）"
+                    .formatted(input, openPositions.peek()));
+        }
+        if (root.children.size() > 1) {
+            // 只取第一个组会把其余括号组无声丢弃，同样属于静默改写语义
+            throw new FilamentsError("lg 表达式存在多个顶层括号组: %s".formatted(input));
         }
 
         return root.children.isEmpty() ? root : root.children.get(0);
