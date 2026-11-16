@@ -365,7 +365,9 @@ public abstract class Filaments<T> {
             throw new FilamentsError("新增数据为空");
         }
 
-        var objectFields = List.of(this.dataClass.getDeclaredFields());
+        // 复用构造期索引而非重新 getDeclaredFields()：后者会把 static 字段带进列清单
+        // （静态常量值被写库，或渲染出不存在的列）；modelFields 建索引时已跳过 static
+        var objectFields = List.copyOf(this.modelFields.values());
 
         var dbFields = objectFields.stream()
                 .map(r -> columnRef(r.getName()))
@@ -442,7 +444,8 @@ public abstract class Filaments<T> {
         }
 
         UpdateQuery<Record> q = db.updateQuery(tableRef());
-        var fields = this.dataClass.getDeclaredFields();
+        // 同 create：走构造期索引，static 字段建索引时已过滤，不会进 SET 子句
+        var fields = this.modelFields.values();
 
         for (var field : fields) {
             field.setAccessible(true);

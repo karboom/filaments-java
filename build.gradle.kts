@@ -79,6 +79,15 @@ mavenPublishing {
     }
 }
 
+// 兼容下限固定在 Java 22：源码里的未命名 lambda 形参（_ ->）由 JEP 456 在 22 转正，
+// jOOQ 3.21 自身也要求 21，再低就编不过。
+// 不用 java.toolchain：本机构建走 --offline，没有 JDK 22 可供 toolchain 解析下载；
+// options.release 让 JDK 25 直接产出 66 字节码并按 22 的 API 做符号校验，
+// 否则产物 class 版本跟随本地 JDK，会把下游强行抬到 25。
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(22)
+}
+
 tasks.test {
     useJUnitPlatform()
     finalizedBy(tasks.jacocoTestReport)
