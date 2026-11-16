@@ -261,6 +261,35 @@ class SelectSpecBuilderTest {
                     .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("数字字面量");
         }
+
+        @Test
+        void unclosedParamsRejected() {
+            // 漏右括号曾把参数静默截掉：substr(1,2 → substr("x")
+            assertThatThrownBy(() -> builder.buildFuncChain("\"x\"", List.of("substr(1,2")))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("括号不配对");
+        }
+
+        @Test
+        void danglingOpenParenRejected() {
+            // lower( 曾渲染成 lower("x")，括号与残渣一起被吞
+            assertThatThrownBy(() -> builder.buildFuncChain("\"x\"", List.of("lower(")))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("括号不配对");
+        }
+
+        @Test
+        void trailingAfterCloseRejected() {
+            assertThatThrownBy(() -> builder.buildFuncChain("\"x\"", List.of("substr(1,2)y")))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("括号不配对");
+        }
+
+        @Test
+        void emptyParensStillAllowed() {
+            assertThat(builder.buildFuncChain("\"x\"", List.of("lower()")))
+                    .isEqualTo("lower(\"x\")");
+        }
     }
 
     // endregion

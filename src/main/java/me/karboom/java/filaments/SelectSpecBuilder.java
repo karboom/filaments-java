@@ -464,12 +464,18 @@ public class SelectSpecBuilder {
             List<String> paramList = new ArrayList<>();
             String funcName = func.trim();
             if (funcName.contains("(")) {
-                int startIndex = funcName.indexOf('(') + 1;
+                int openIdx = funcName.indexOf('(');
+                int startIndex = openIdx + 1;
                 int endIndex = funcName.indexOf(')');
+                // 括号必须完整闭合且后面不带残渣：否则 substr(1,2、lower( 这类写法
+                // 会走到下面的截断，把参数静默吞掉而不是报错
+                if (endIndex < startIndex || !funcName.substring(endIndex + 1).isEmpty()) {
+                    throw new FilamentsError("函数链括号不配对: %s".formatted(func));
+                }
                 if (startIndex < endIndex) {
                     paramList = List.of(funcName.substring(startIndex, endIndex).split(","));
                 }
-                funcName = funcName.substring(0, funcName.indexOf('('));
+                funcName = funcName.substring(0, openIdx);
             }
 
             // 防注入：函数名必须精确命中白名单，括号参数仅允许数字字面量
