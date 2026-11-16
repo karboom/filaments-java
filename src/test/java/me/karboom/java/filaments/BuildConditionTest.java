@@ -205,7 +205,7 @@ class BuildConditionTest {
         void unknownOperatorRejected() {
             assertThatThrownBy(() -> filament.buildConditionFromFieldCondition(
                     cond("name", List.of(), "UNKNOWN_OP", "x")))
-                    .isInstanceOf(IllegalStateException.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("Unknown operator");
         }
 
@@ -213,7 +213,7 @@ class BuildConditionTest {
         void illegalColumnNameRejected() {
             assertThatThrownBy(() -> filament.buildConditionFromFieldCondition(
                     cond("na me", List.of(), FieldCondition.EQ, "x")))
-                    .isInstanceOf(Error.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("非法字段名");
         }
 
@@ -221,7 +221,7 @@ class BuildConditionTest {
         void illegalJsonPathSegmentRejected() {
             assertThatThrownBy(() -> filament.buildConditionFromFieldCondition(
                     cond("address.a ge", List.of(), FieldCondition.EQ, "x")))
-                    .isInstanceOf(Error.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("非法字段名");
         }
 
@@ -229,14 +229,14 @@ class BuildConditionTest {
         void injectionInColumnNameRejected() {
             assertThatThrownBy(() -> filament.buildConditionFromFieldCondition(
                     cond("x'); drop table y; --", List.of(), FieldCondition.EQ, 1)))
-                    .isInstanceOf(Error.class);
+                    .isInstanceOf(FilamentsError.class);
         }
 
         @Test
         void funcNotInWhitelistRejected() {
             assertThatThrownBy(() -> filament.buildConditionFromFieldCondition(
                     cond("name", List.of("pg_sleep(1)"), FieldCondition.EQ, "x")))
-                    .isInstanceOf(IllegalArgumentException.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("白名单");
         }
 
@@ -244,7 +244,7 @@ class BuildConditionTest {
         void funcNonNumericParamRejected() {
             assertThatThrownBy(() -> filament.buildConditionFromFieldCondition(
                     cond("name", List.of("substr(1,'a')"), FieldCondition.EQ, "x")))
-                    .isInstanceOf(IllegalArgumentException.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("数字字面量");
         }
     }

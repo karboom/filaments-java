@@ -41,7 +41,7 @@ public class SelectSpecBuilder {
     /**
      * 解析为 SelectSpec（用于调试/序列化）
      */
-    public SelectSpec parse(Map<String, Object> query, String subQueryAlias) {
+    public SelectSpec parse(Map<String, Object> query) {
         SelectSpec spec = new SelectSpec();
 
         parseSelectFields(query, spec);
@@ -62,7 +62,7 @@ public class SelectSpecBuilder {
             switch (rt) {
                 case String s -> list.addAll(StrUtil.split(s, ","));
                 case List<?> l -> list.addAll(l.stream().map(Object::toString).toList());
-                default -> throw new IllegalStateException("Unexpected value: " + rt);
+                default -> throw new FilamentsError("Unexpected value: " + rt);
             }
             spec.setSelectFields(list);
         }
@@ -76,7 +76,7 @@ public class SelectSpecBuilder {
             case String s -> list.addAll(StrUtil.split(s, ","));
             case List<?> l -> list.addAll(l.stream().map(Object::toString).toList());
             case null -> { }
-            default -> throw new IllegalStateException("Unexpected value: " + od);
+            default -> throw new FilamentsError("Unexpected value: " + od);
         }
 
         var orderByList = new ArrayList<OrderSpec>();
@@ -165,14 +165,14 @@ public class SelectSpecBuilder {
             var alias = key.substring(0, idx);
             var rest = key.substring(idx + config.aliasSplitter.length());
             if (!ALIAS_PATTERN.matcher(alias).matches()) {
-                throw new IllegalArgumentException("非法条件别名: " + key);
+                throw new FilamentsError("非法条件别名: " + key);
             }
             if (rest.isEmpty() || rest.contains(config.aliasSplitter)) {
-                throw new IllegalArgumentException("条件键中的别名只能出现一次且不能为空: " + key);
+                throw new FilamentsError("条件键中的别名只能出现一次且不能为空: " + key);
             }
             var prev = aliasMap.put(alias, key);
             if (prev != null) {
-                throw new IllegalArgumentException("重复的条件别名: " + alias);
+                throw new FilamentsError("重复的条件别名: " + alias);
             }
         }
         return aliasMap;
@@ -211,7 +211,7 @@ public class SelectSpecBuilder {
             } else if (item instanceof String) {
                 String key = resolveConditionKey((String) item, aliasMap);
                 if (!query.containsKey(key)) {
-                    throw new IllegalArgumentException("lg 表达式引用了未知的条件: " + item);
+                    throw new FilamentsError("lg 表达式引用了未知的条件: " + item);
                 }
                 var pickedQuery = new HashMap<>(query);
                 pickedQuery.keySet().retainAll(List.of(key));
@@ -268,6 +268,9 @@ public class SelectSpecBuilder {
             case "like" -> cond.setOperator(FieldCondition.LIKE);
             case "notLike" -> cond.setOperator(FieldCondition.NOT_LIKE);
             case "intersect" -> cond.setOperator(FieldCondition.INTERSECT);
+            // 空值判定：末段是操作符，值一律不参与 SQL
+            case "isNull" -> cond.setOperator(FieldCondition.IS_NULL);
+            case "isNotNull" -> cond.setOperator(FieldCondition.IS_NOT_NULL);
             default -> {
                 cond.setOperator(FieldCondition.EQ);
                 isOperator = false;
@@ -394,11 +397,11 @@ public class SelectSpecBuilder {
             var whiteListed = config.sqlFuncList.stream()
                     .anyMatch(w -> w.equalsIgnoreCase(checkedName));
             if (!whiteListed) {
-                throw new IllegalArgumentException("函数不在白名单（FilamentsConfig.sqlFuncList）: " + func);
+                throw new FilamentsError("函数不在白名单（FilamentsConfig.sqlFuncList）: " + func);
             }
             for (String param : paramList) {
                 if (!param.trim().matches("\\d+")) {
-                    throw new IllegalArgumentException("函数参数仅允许数字字面量: " + func);
+                    throw new FilamentsError("函数参数仅允许数字字面量: " + func);
                 }
             }
 

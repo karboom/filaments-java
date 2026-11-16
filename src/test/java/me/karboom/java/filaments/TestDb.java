@@ -76,6 +76,6 @@ public class TestDb {
                     .filter(stmt -> !stmt.isBlank())
                     .toList();
         }
-        throw new Error("找不到建表脚本: " + DDL_PATH);
+        throw new FilamentsError("找不到建表脚本: " + DDL_PATH);
     }
 }

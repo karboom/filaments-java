@@ -80,7 +80,7 @@ Add the dependency with Gradle or Maven:
 
 ```gradle
 dependencies {
-    implementation 'io.github.karboom:filaments-java:2.0.2'
+    implementation 'io.github.karboom:filaments-java:2.1.0'
 }
 ```
 
@@ -90,7 +90,7 @@ dependencies {
 <dependency>
     <groupId>io.github.karboom</groupId>
     <artifactId>filaments-java</artifactId>
-    <version>2.0.2</version>
+    <version>2.1.0</version>
 </dependency>
 ```
 
@@ -126,7 +126,7 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 
 | Key | Purpose                          | Default | Example                     | SQL                                                      |
 |-----|----------------------------------|---------|-----------------------------|----------------------------------------------------------|
-| rt  | select fields                    | *       | ?rt=name,age                | `select name, age`                                       |
+| rt  | select fields (column names only — no jsonb paths/indexes) | *  | ?rt=name,age               | `select name, age`                                       |
 | p   | page number                      | 1       | ?p=3                        | `limit 20 offset 40`                                     |
 | pc  | page size                        | 20      | ?pc=18                      | `limit 18 offset 0`                                      |
 | od  | ordering (`-` = desc)            | null    | ?od=id,-height              | `order by id asc, height desc`                           |
@@ -142,7 +142,7 @@ field|function(args)...|operator=value
 
 > Constraints: field names must be valid SQL identifiers (dotted paths like `data.type` are checked segment by segment); functions must be in the `FilamentsConfig.sqlFuncList` whitelist (default: built-in `FilamentsConfig.PG_FUNCS`; `MYSQL_FUNCS` / `SQLSERVER_FUNCS` presets are provided for wholesale replacement, and you can freely extend it), and function arguments must be numeric literals. Violations throw instead of being rendered into SQL.
 
-> Naming: condition keys, `rt`, `od`, group fields and the `pk` column are all normalized as camelCase → lowercase snake_case (`wechatId` → `wechat_id`, and consecutive capitals are folded too: `userID` → `user_id`), so either spelling addresses the same column. In a dotted jsonb path **segment 0** follows the column rule and the remaining segments follow the JSON-key rule, so `extra.totalCount` and `extra.total_count` address the same key. Both rules are configurable, see [Naming and configuration](#naming-and-configuration).
+> Naming: condition keys, `rt`, `od`, group fields and the `pk` column are all normalized as camelCase → lowercase snake_case (`wechatId` → `wechat_id`, and consecutive capitals are folded too: `userID` → `user_id`), so either spelling addresses the same column. In a dotted jsonb path **segment 0** follows the column rule and the remaining segments follow the JSON-key rule, so `extra.totalCount` and `extra.total_count` address the same key. Array indexes may be written either as `data[0].type` or as `data.0.type` — both address the first element; a bracket must contain a plain integer, anything else throws. Both rules are configurable, see [Naming and configuration](#naming-and-configuration).
 
 #### Examples
 
@@ -176,20 +176,26 @@ var users = filaments.get(db, new HashMap<>() {{
 
 ### Operators
 
-| Query string             | Alias | SQL                                  |
-|--------------------------|-------|--------------------------------------|
-| ?id&#124;gt=1            |       | `where id > 1`                       |
-| ?id&#124;ge=1            |       | `where id >= 1`                      |
-| ?id&#124;lt=1            |       | `where id < 1`                       |
-| ?id&#124;le=1            |       | `where id <= 1`                      |
-| ?id&#124;in=1            |       | `where id in (1)`                    |
-| ?id&#124;not_in=1        | nin   | `where id not in (1)`                |
-| ?id&#124;between=1,2     | bt    | `where id between 1 and 2`           |
-| ?id&#124;not_between=1,2 | nbt   | `where id not between 1 and 2`       |
-| ?id&#124;like=k%         | lk    | `where id like 'k%'`                 |
-| ?id&#124;not_like=k%     | nlk   | `where id not like 'k%'`             |
-| ?id&#124;is_null=1       | nl    | `where id is null`                   |
-| ?id&#124;is_not_null=1   | nnl   | `where id is not null`               |
+Operator tokens are exact and case-sensitive (camelCase, as listed). A last segment that is not in this table is treated as the tail of the func chain (implicit `eq`), so a misspelled operator is rejected by the function whitelist rather than silently changing meaning.
+
+| Query string              | SQL                                     |
+|---------------------------|-----------------------------------------|
+| ?id&#124;ne=1             | `where id <> 1`                         |
+| ?id&#124;gt=1             | `where id > 1`                          |
+| ?id&#124;ge=1             | `where id >= 1`                         |
+| ?id&#124;lt=1             | `where id < 1`                          |
+| ?id&#124;le=1             | `where id <= 1`                         |
+| ?id&#124;in=1,2           | `where id in (1, 2)`                    |
+| ?id&#124;notIn=1,2        | `where id not in (1, 2)`                |
+| ?id&#124;between=1,2      | `where id between 1 and 2`              |
+| ?id&#124;notBetween=1,2   | `where id not between 1 and 2`          |
+| ?id&#124;like=k%          | `where id like 'k%'`                    |
+| ?id&#124;notLike=k%       | `where id not like 'k%'`                |
+| ?id&#124;intersect=a      | `where jsonb_path_exists(id, '$[*] ? (@ == $q0)', ...)` |
+| ?name&#124;isNull=        | `where name is null`                    |
+| ?name&#124;isNotNull=     | `where name is not null`                |
+
+> `isNull` / `isNotNull` take no parameter — whatever value is bound to the key (`=`, `=1`, `=anything`) is ignored, because the predicate has nothing to compare against. They compose with a func chain like every other operator (`extra.age|substr(1,2)|isNull`). Negation needs no extra operator: write `!(name|isNull)` in `lg`.
 
 ### Naming and configuration
 
@@ -233,7 +239,7 @@ Everything else tunable lives on the same config object (share one instance or b
 | --- | --- | --- |
 | `nameSplitter` | `"\|"` | separator of `field\|function\|operator` in query keys |
 | `aliasSplitter` | `"::"` | condition-alias separator (`alias::field\|function\|operator`), never reaches SQL |
-| `sqlFuncList` | `PG_FUNCS` (also `MYSQL_FUNCS` / `SQLSERVER_FUNCS`) | function-chain and aggregate whitelist, swap preset or extend |
+| `sqlFuncList` | `PG_FUNCS` (also `MYSQL_FUNCS` / `SQLSERVER_FUNCS`) | function-chain and aggregate whitelist, swap preset or extend. Operator tokens are a fixed set (table above) and are not configurable |
 | `page` / `pageSize` | 1 / 20 | paging used by `getByPages()` when `p` / `pc` are absent |
 
 ### Types and JSON

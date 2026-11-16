@@ -21,11 +21,11 @@ import static org.jooq.impl.DSL.using;
  * ┌────────────────┬──────────┬──────────┬──────────┬─────────────┬──────────────┐
  * │ 注入点          │ 空格      │ 引号/分号 │ 括号      │ 反引号(合法剥离)│ 期望         │
  * ├────────────────┼──────────┼──────────┼──────────┼─────────────┼──────────────┤
- * │ rt 字段         │ ✓        │ ✓        │ ✓        │ ✓           │ Error/剥离    │
- * │ od 排序键       │ ✓        │ ✓        │ ✓        │ ✓           │ Error/剥离    │
- * │ where 字段      │ ✓        │ ✓        │ ✓        │ ✓           │ Error/剥离    │
- * │ jsonb 路径段     │ ✓        │ ✓        │ ✓        │ —           │ Error         │
- * │ 聚合/分组字段    │ ✓        │ ✓        │ ✓        │ —           │ Error         │
+ * │ rt 字段         │ ✓        │ ✓        │ ✓        │ ✓           │ FilamentsError/剥离    │
+ * │ od 排序键       │ ✓        │ ✓        │ ✓        │ ✓           │ FilamentsError/剥离    │
+ * │ where 字段      │ ✓        │ ✓        │ ✓        │ ✓           │ FilamentsError/剥离    │
+ * │ jsonb 路径段     │ ✓        │ ✓        │ ✓        │ —           │ FilamentsError│
+ * │ 聚合/分组字段    │ ✓        │ ✓        │ ✓        │ —           │ FilamentsError│
  * │ 函数链名/参数    │ —        │ —        │ ✓        │ —           │ IllegalArg    │
  * │ 条件值(任意)     │ ✓        │ ✓        │ ✓        │ ✓           │ 绑定不进文本  │
  * └────────────────┴──────────┴──────────┴──────────┴─────────────┴──────────────┘
@@ -59,20 +59,20 @@ class InjectionSafetyTest {
             PAYLOADS.forEach(p ->
                     assertThatThrownBy(() -> Filaments.identsSafe(p))
                             .as("payload=%s", p)
-                            .isInstanceOf(Error.class)
+                            .isInstanceOf(FilamentsError.class)
                             .hasMessageContaining("非法字段名"));
         }
 
         @Test
         void rejectsInDotSegment() {
             assertThatThrownBy(() -> Filaments.identsSafe("address.a b"))
-                    .isInstanceOf(Error.class);
+                    .isInstanceOf(FilamentsError.class);
         }
 
         @Test
         void rejectsDigitLeading() {
             assertThatThrownBy(() -> Filaments.identsSafe("1bad"))
-                    .isInstanceOf(Error.class);
+                    .isInstanceOf(FilamentsError.class);
         }
     }
 
@@ -116,7 +116,7 @@ class InjectionSafetyTest {
         @Test
         void jsonPathSegmentPayloadRejected() {
             assertThatThrownBy(() -> filament.build(using(POSTGRES), Map.of("address." + "a b|eq", 1)))
-                    .isInstanceOf(Error.class);
+                    .isInstanceOf(FilamentsError.class);
         }
     }
 
@@ -149,14 +149,14 @@ class InjectionSafetyTest {
         @Test
         void arbitraryFuncRejected() {
             assertThatThrownBy(() -> filament.build(using(POSTGRES), Map.of("name|pg_sleep(1)|eq", "x")))
-                    .isInstanceOf(IllegalArgumentException.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("白名单");
         }
 
         @Test
         void stringParamRejected() {
             assertThatThrownBy(() -> filament.build(using(POSTGRES), Map.of("name|substr(a,2)|eq", "x")))
-                    .isInstanceOf(IllegalArgumentException.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("数字字面量");
         }
     }

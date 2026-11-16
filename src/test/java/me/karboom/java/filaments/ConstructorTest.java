@@ -41,9 +41,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * │ 数组             │ String[]               │ true       │ 是           │
  * │ 基本类型 int      │ int                    │ true(现状) │ 模型应使用封装类 │
  * │ static 字段      │ MODEL_TAG              │ 跳过       │ 跳过         │
- * │ Object 字段      │ extra                  │ —          │ 构造期抛 Error │
+ * │ Object 字段      │ extra                  │ —          │ 构造期抛 FilamentsError │
  * └──────────────────┴────────────────────────┴────────────┴──────────────┘
- * 异常路径：Object 声明字段 -> Error("声明为 Object")
+ * 异常路径：Object 声明字段 -> FilamentsError("声明为 Object")
  * </pre>
  */
 @Timeout(5)
@@ -131,7 +131,7 @@ class ConstructorTest {
                 public ValidatorBuilder<BadObjectUser> initValidator() {
                     return new ValidatorBuilder<>();
                 }
-            }).isInstanceOf(Error.class)
+            }).isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("声明为 Object");
         }
 

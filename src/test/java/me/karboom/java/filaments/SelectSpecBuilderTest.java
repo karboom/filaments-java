@@ -49,19 +49,19 @@ class SelectSpecBuilderTest {
 
         @Test
         void selectFieldsFromRt() {
-            var spec = builder.parse(new LinkedHashMap<>(Map.of("rt", "id,name")), null);
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("rt", "id,name")));
             assertThat(spec.getSelectFields()).containsExactly("id", "name");
         }
 
         @Test
         void selectFieldsFromList() {
-            var spec = builder.parse(new LinkedHashMap<>(Map.of("rt", List.of("id", "name"))), null);
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("rt", List.of("id", "name"))));
             assertThat(spec.getSelectFields()).containsExactly("id", "name");
         }
 
         @Test
         void orderByParsesDescPrefix() {
-            var spec = builder.parse(new LinkedHashMap<>(Map.of("od", "name,-age")), null);
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("od", "name,-age")));
             var od = spec.getOrderBy();
             assertAll(
                     () -> assertThat(od.get(0).getField()).isEqualTo("name"),
@@ -72,7 +72,7 @@ class SelectSpecBuilderTest {
 
         @Test
         void paginationOffsetComputed() {
-            var spec = builder.parse(new LinkedHashMap<>(Map.of("pc", 10, "p", 3)), null);
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("pc", 10, "p", 3)));
             assertAll(
                     () -> assertThat(spec.getLimit()).isEqualTo(10),
                     () -> assertThat(spec.getOffset()).isEqualTo(20));
@@ -80,7 +80,7 @@ class SelectSpecBuilderTest {
 
         @Test
         void paginationOnlyPc() {
-            var spec = builder.parse(new LinkedHashMap<>(Map.of("pc", 5)), null);
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("pc", 5)));
             assertAll(
                     () -> assertThat(spec.getLimit()).isEqualTo(5),
                     () -> assertThat(spec.getOffset()).isNull());
@@ -95,7 +95,7 @@ class SelectSpecBuilderTest {
             q.put("p", 1);
             q.put("pg", true);
             q.put("name", "x");
-            var spec = builder.parse(q, null);
+            var spec = builder.parse(q);
             assertThat(spec.getWhere().getValue()).hasSize(1); // 仅 name 进 where
         }
 
@@ -103,8 +103,8 @@ class SelectSpecBuilderTest {
         void invalidRtTypeThrows() {
             var q = new LinkedHashMap<String, Object>();
             q.put("rt", 123);
-            assertThatThrownBy(() -> builder.parse(q, null))
-                    .isInstanceOf(IllegalStateException.class)
+            assertThatThrownBy(() -> builder.parse(q))
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("Unexpected value");
         }
     }
@@ -177,14 +177,14 @@ class SelectSpecBuilderTest {
         @Test
         void unknownFuncRejected() {
             assertThatThrownBy(() -> builder.buildFuncChain("\"x\"", List.of("pg_advisory_lock")))
-                    .isInstanceOf(IllegalArgumentException.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("白名单");
         }
 
         @Test
         void nonNumericParamRejected() {
             assertThatThrownBy(() -> builder.buildFuncChain("\"x\"", List.of("substr(a,2)")))
-                    .isInstanceOf(IllegalArgumentException.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("数字字面量");
         }
     }

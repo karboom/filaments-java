@@ -28,13 +28,13 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  * ┌──────────┬───────────┬───────────┬───────────┬──────────────┐
  * │ data 数  │ 字段含 null│ 含 jsonb  │ 含 enum   │ 校验          │
  * ├──────────┼───────────┼───────────┼───────────┼──────────────┤
- * │ 0        │ –         │ –         │ –         │ 空列表→Error  │
+ * │ 0        │ –         │ –         │ –         │ 空列表→FilamentsError  │
  * │ 1        │ ✓         │ ✓         │ ✓         │ 通过          │
- * │ N        │ ✓         │ ✓         │ ✓         │ 失败→Error    │
+ * │ N        │ ✓         │ ✓         │ ✓         │ 失败→FilamentsError    │
  * └──────────┴───────────┴───────────┴───────────┴──────────────┘
  * </pre>
  *
- * 另：列表本身为空/null、以及列表内元素为 null，都在拼 SQL 前抛 Error（见 Create 内三条 rejected 用例）。
+ * 另：列表本身为空/null、以及列表内元素为 null，都在拼 SQL 前抛 FilamentsError（见 Create 内三条 rejected 用例）。
  */
 @Timeout(30)
 class FilamentsTest {
@@ -83,7 +83,7 @@ class FilamentsTest {
         void emptyListRejected() {
             assertAll(
                     () -> assertThatThrownBy(() -> f.create(TestDb.db(), List.of()))
-                            .isInstanceOf(Error.class)
+                            .isInstanceOf(FilamentsError.class)
                             .hasMessageContaining("新增数据为空"),
                     // 空列表绝不能落到 insert ... default values 上写出一行全默认值数据
                     () -> assertThat(TestDb.db().fetch("select id from filaments_user")).isEmpty());
@@ -92,7 +92,7 @@ class FilamentsTest {
         @Test
         void nullListRejected() {
             assertThatThrownBy(() -> f.create(TestDb.db(), (List<User>) null))
-                    .isInstanceOf(Error.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("新增数据为空");
         }
 
@@ -101,7 +101,7 @@ class FilamentsTest {
             var rows = Arrays.asList(TestFilaments.seed("1"), null, TestFilaments.seed("3"));
             assertAll(
                     () -> assertThatThrownBy(() -> f.create(TestDb.db(), rows))
-                            .isInstanceOf(Error.class)
+                            .isInstanceOf(FilamentsError.class)
                             .hasMessageContaining("第 1 条"),
                     // 逐行校验后统一 execute，中途抛错不应留下半批数据
                     () -> assertThat(TestDb.db().fetch("select id from filaments_user")).isEmpty());
@@ -139,7 +139,7 @@ class FilamentsTest {
             var bad = TestFilaments.seed("1");
             bad.name = "ab";
             assertThatThrownBy(() -> f.create(TestDb.db(), bad))
-                    .isInstanceOf(Error.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("name");
         }
 
@@ -436,7 +436,7 @@ class FilamentsTest {
         @Test
         void illegalAggFuncRejected() {
             assertThatThrownBy(() -> f.aggregation(TestDb.db(), Map.of("pg_sleep", "id"), Map.of(), List.of(), null))
-                    .isInstanceOf(Error.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("不支持的聚合函数");
         }
     }

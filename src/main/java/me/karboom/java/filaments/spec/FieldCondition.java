@@ -22,6 +22,8 @@ public class FieldCondition {
     public static final String LIKE = "LIKE";
     public static final String NOT_LIKE = "NOT_LIKE";
     public static final String INTERSECT = "INTERSECT";
+    public static final String IS_NULL = "IS_NULL";
+    public static final String IS_NOT_NULL = "IS_NOT_NULL";
 
     private String field;
     private String operator;

@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  * ├──────────────────┼───────────────┼──────────────────────────┤
  * │ List/POJO/Map     │ jsonb         │ readValue(text)          │
  * │ OffsetDateTime    │ timestamptz   │ record.get(i, type)      │
- * │ java.util.Date    │ timestamptz   │ 读侧响亮拒绝 Error        │
+ * │ java.util.Date    │ timestamptz   │ 读侧响亮拒绝 FilamentsError        │
  * │ Enum              │ varchar       │ name() 写 / convert 读    │
  * │ Long ← int4       │ int           │ convertValue 加宽         │
  * │ BigDecimal        │ numeric       │ 原样 + 精度保持           │
@@ -153,7 +153,7 @@ class TypeMappingTest {
                 }
             };
             assertThatThrownBy(() -> legacy.get(TestDb.db(), Map.of("rt", "id,createTime")))
-                    .isInstanceOf(Error.class)
+                    .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("请改用");
         }
     }

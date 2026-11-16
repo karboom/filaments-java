@@ -74,7 +74,7 @@
 
 ```gradle
 dependencies {
-    implementation 'io.github.karboom:filaments-java:2.0.2'
+    implementation 'io.github.karboom:filaments-java:2.1.0'
 }
 ```
 
@@ -84,7 +84,7 @@ dependencies {
 <dependency>
     <groupId>io.github.karboom</groupId>
     <artifactId>filaments-java</artifactId>
-    <version>2.0.2</version>
+    <version>2.1.0</version>
 </dependency>
 ```
 
@@ -118,7 +118,7 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 
 | 字段名称 | 功能                             | 默认值 | 查询字符串   | 对应SQL                                 |
 | -------- | -------------------------------- | ------ | ------------ | --------------------------------------- |
-| rt       | 指定返回字段                     | *      | ?rt=name,age | ```select `name`, `age` ```             |
+| rt       | 指定返回字段（仅列名，不支持 jsonb 路径/下标） | *      | ?rt=name,age | ```select `name`, `age` ```             |
 | p        | 指定当前页码                     | 1      | ?p=3         | ```limit 20 offset 40```                |
 | pc       | 指定页内行数                     | 20     | ?pc=18       | ```limit 18 offset 0```                 |
 | od       | 指定排序规则                     | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
@@ -134,7 +134,7 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 
 > 约束：字段名须为合法标识符（点分路径如 `data.type` 逐段校验）；函数必须命中白名单 `FilamentsConfig.sqlFuncList`（默认内置 PG 常用函数集 `FilamentsConfig.PG_FUNCS`，另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS` 预设可整体替换或自行增删），参数仅支持数字字面量；违反即抛错。
 
-> 命名约定：条件键、`rt`、`od`、分组字段、主键 `pk` 一律按「驼峰 → 小写下划线」归一化（`wechatId` → `wechat_id`，连续大写同样降格：`userID` → `user_id`），因此写驼峰或写库里的下划线名都指向同一列。点分 jsonb 路径的**段 0 按列名规则**归一化，其后的路径段按 JSON 键规则归一化，所以 `extra.totalCount` 与 `extra.total_count` 命中同一个键。两套规则都可配置，见[命名与配置](#命名与配置)。
+> 命名约定：条件键、`rt`、`od`、分组字段、主键 `pk` 一律按「驼峰 → 小写下划线」归一化（`wechatId` → `wechat_id`，连续大写同样降格：`userID` → `user_id`），因此写驼峰或写库里的下划线名都指向同一列。点分 jsonb 路径的**段 0 按列名规则**归一化，其后的路径段按 JSON 键规则归一化，所以 `extra.totalCount` 与 `extra.total_count` 命中同一个键。数组下标两种写法等价：`data[0].type` 与 `data.0.type` 都指向第一个元素（方括号内只接受纯整数，其余一律抛错）。两套规则都可配置，见[命名与配置](#命名与配置)。
 
 #### 示例
 
@@ -144,9 +144,10 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | ?type&#124;in=dog,cat                             | ``` where `type` in ( 'dog', 'cat') ```                     |
 | ?type&#124;substr(1,2)&#124;in=dog,cat            | ``` where substr(`type`, 1, 2) in ( 'dog', 'cat')```        |
 | ?type&#124;lower&#124;substr(1,2)&#124;in=dog,cat | ``` where substr(lower(`type`), 1, 2) in ( 'dog', 'cat')``` |
-| ?data.type=dog                                    | ``` where `data`->'$.type' = 'dog' ```                      |
-| ?data[0].type=cat                                 | ``` where `data`->'$[0].type' = 'cat' ```                   |
-| ?data[0]=dog                                      | ``` where `data`->'$[0]' = 'dog' ```                        |
+| ?data.type=dog                                    | ``` where `data` #>> '{type}' = 'dog' ```                   |
+| ?data[0].type=cat                                 | ``` where `data` #>> '{0,type}' = 'cat' ```                 |
+| ?data[0]=dog                                      | ``` where `data` #>> '{0}' = 'dog' ```                      |
+| ?data.0.type=cat                                  | 同上（下标两种写法归一化为同一形态）                          |
 
 #### 条件别名
 
@@ -168,20 +169,26 @@ var users = filaments.get(db, new HashMap<>() {{
 
 ### 操作符
 
-| 查询字符串               | 别名 | 对应SQL                                 |
-| ------------------------ | ---- | --------------------------------------- |
-| ?id&#124;gt=1            |      | ```  where `id` > 1 ```                 |
-| ?id&#124;ge=1            |      | ```  where `id` >= 1 ```                |
-| ?id&#124;lt=1            |      | ```  where `id` < 1 ```                 |
-| ?id&#124;le=1            |      | ```  where `id` <= 1 ```                |
-| ?id&#124;in=1            |      | ```  where `id` in (1) ```              |
-| ?id&#124;not_in=1        | nin  | ```  where `id` not in (1) ```          |
-| ?id&#124;between=1,2     | bt   | ```  where `id` between 1 and 2 ```     |
-| ?id&#124;not_between=1,2 | nbt  | ```  where `id` not between 1 and 2 ``` |
-| ?id&#124;like=k%         | lk   | ```  where `id` like 'k%' ```           |
-| ?id&#124;not_like=k%     | nlk  | ```  where `id` not like 'k%' ```       |
-| ?id&#124;is_null=1       | nl   | ```  where `id` is null ```             |
-| ?id&#124;is_not_null=1   | nnl  | ```  where `id` is not null ```         |
+操作符 token 精确匹配且区分大小写（就是下表里的驼峰写法）。末段不在表中时按「隐式 `eq` + 函数链末段」处理，因此拼错的操作符会被函数白名单拒掉，而不是静默改变语义。
+
+| 查询字符串                | 对应SQL                                              |
+| ------------------------- | ---------------------------------------------------- |
+| ?id&#124;ne=1             | ```  where `id` <> 1 ```                             |
+| ?id&#124;gt=1             | ```  where `id` > 1 ```                              |
+| ?id&#124;ge=1             | ```  where `id` >= 1 ```                             |
+| ?id&#124;lt=1             | ```  where `id` < 1 ```                              |
+| ?id&#124;le=1             | ```  where `id` <= 1 ```                             |
+| ?id&#124;in=1,2           | ```  where `id` in (1, 2) ```                        |
+| ?id&#124;notIn=1,2        | ```  where `id` not in (1, 2) ```                    |
+| ?id&#124;between=1,2      | ```  where `id` between 1 and 2 ```                  |
+| ?id&#124;notBetween=1,2   | ```  where `id` not between 1 and 2 ```              |
+| ?id&#124;like=k%          | ```  where `id` like 'k%' ```                        |
+| ?id&#124;notLike=k%       | ```  where `id` not like 'k%' ```                    |
+| ?tags&#124;intersect=a    | ```  where jsonb_path_exists(`tags`, '$[*] ? (@ == $q0)', ...) ``` |
+| ?name&#124;isNull=        | ```  where `name` is null ```                        |
+| ?name&#124;isNotNull=     | ```  where `name` is not null ```                    |
+
+> `isNull` / `isNotNull` 不取参数：键上绑的值（留空、`=1`、`=任意`）一律忽略，因为谓词没有比较对象。它们同样可以接在函数链后面（`extra.age|substr(1,2)|isNull`）。取反不需要额外操作符，`lg` 里写 `!(name|isNull)` 即可。
 
 ### 命名与配置
 
@@ -223,7 +230,7 @@ var filament = new Filaments<User>("filaments_camel", config) {
 | --- | --- | --- |
 | `nameSplitter` | `"\|"` | 查询语法里 `字段\|函数\|操作符` 的分隔符 |
 | `aliasSplitter` | `"::"` | 条件别名寻址分隔符（`别名::字段\|函数\|操作符`），永不进 SQL |
-| `sqlFuncList` | `PG_FUNCS`（另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS`） | 函数链与聚合函数白名单，可整体换预设或增删 |
+| `sqlFuncList` | `PG_FUNCS`（另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS`） | 函数链与聚合函数白名单，可整体换预设或增删。操作符 token 是固定集合（见上方操作符表），不可配置 |
 | `page` / `pageSize` | 1 / 20 | `getByPages()` 未传 `p` / `pc` 时的默认分页 |
 
 ### 类型与 JSON 约定

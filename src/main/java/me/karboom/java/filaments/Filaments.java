@@ -40,6 +40,12 @@ public abstract class Filaments<T> {
     // 合法 SQL 标识符 / jsonb 路径段（防注入：拒绝引号、括号、空白等结构字符）
     static final Pattern IDENT_PATTERN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
+    /** jsonb 路径里的数组下标段（纯数字），只在段 0 之后合法 */
+    static final Pattern INDEX_PATTERN = Pattern.compile("\\d+");
+
+    /** 用户写的方括号下标语法：data[0] -> data.0（归一化后才进校验与渲染） */
+    static final Pattern ARRAY_INDEX = Pattern.compile("\\[(\\d+)]");
+
 
     private final Class<T> dataClass;
 
@@ -130,7 +136,7 @@ public abstract class Filaments<T> {
                 continue;
             }
             if (rf.getType() == Object.class) {
-                throw new Error("模型字段 " + rf.getName() + " 声明为 Object：jsonb 字段请用具体类型（POJO/List/Map）");
+                throw new FilamentsError("模型字段 " + rf.getName() + " 声明为 Object：jsonb 字段请用具体类型（POJO/List/Map）");
             }
             var col = config.naming.apply(rf.getName());
             indexed.put(col, rf);
@@ -168,8 +174,14 @@ public abstract class Filaments<T> {
     public abstract ValidatorBuilder<T> initValidator();
 
 
+    /**
+     * 用户可控字段名的唯一入口：剥反引号 + 把方括号下标展开成点分段
+     * （{@code data[0].type -> data.0.type}），渲染层只认点分这一种形态。
+     * 只替换纯数字下标；{@code data[a]}、{@code data[0;drop table]} 之类不匹配即原样保留，
+     * 残留的方括号/结构字符随后由 {@link #identsSafe} 拒绝。
+     */
     private String fieldNameSafe(String fieldName) {
-        return fieldName.replace("`", "");
+        return ARRAY_INDEX.matcher(fieldName.replace("`", "")).replaceAll(".$1");
     }
 
     /**
@@ -186,19 +198,25 @@ public abstract class Filaments<T> {
         return config.sqlFuncList.stream()
                 .filter(f -> f.equalsIgnoreCase(name))
                 .findFirst()
-                .orElseThrow(() -> new Error("不支持的聚合函数: " + funcName));
+                .orElseThrow(() -> new FilamentsError("不支持的聚合函数: " + funcName));
     }
 
     /**
-     * 校验字段标识符（支持点分 jsonb 路径），任何一段含非法字符直接拒绝
+     * 校验字段标识符（支持点分 jsonb 路径），任何一段含非法字符直接拒绝。
+     * 段 0 是列名，只认标识符；其后各段允许 JSON 对象键（标识符）或数组下标（纯数字）。
      */
     static List<String> identsSafe(String fieldName) {
         var segments = StrUtil.split(fieldName, '.');
-        for (String seg : segments) {
-            if (!IDENT_PATTERN.matcher(seg).matches()) {
-                throw new Error("非法字段名: " + fieldName);
-            }
+        if (!IDENT_PATTERN.matcher(segments.get(0)).matches()) {
+            throw new FilamentsError("非法字段名: " + fieldName);
         }
+        segments.subList(1, segments.size()).stream()
+                .filter(seg -> !IDENT_PATTERN.matcher(seg).matches()
+                        && !INDEX_PATTERN.matcher(seg).matches())
+                .findFirst()
+                .ifPresent(_ -> {
+                    throw new FilamentsError("非法字段名: " + fieldName);
+                });
         return segments;
     }
 
@@ -223,19 +241,22 @@ public abstract class Filaments<T> {
      */
     private String columnExpr(String fieldName) {
         if (!IDENT_PATTERN.matcher(fieldName).matches()) {
-            throw new Error("非法字段名: " + fieldName);
+            throw new FilamentsError("非法字段名: " + fieldName);
         }
         return name(config.naming.apply(fieldName)).toString();
     }
 
     /**
      * 点分 jsonb 路径表达式：逐段过标识符白名单（identsSafe），
-     * 段 0 按列处理（复用 {@link #columnExpr}），其余段按 JSON 键归一化拼进 {@code #>> '{...}'}。
+     * 段 0 按列处理（复用 {@link #columnExpr}），其余段按 JSON 键归一化拼进 {@code #>> '{...}'}；
+     * 数组下标段原样进路径数组（PG 用整型键取元素），对数字跑 naming 依赖 hutool 行为，不做这个假设。
      * 「写进去的键」与「查询用的键」一致仍需 config.mapper 与 config.naming 配对。
      */
     private String jsonKeyExpr(String fieldName) {
         var segments = identsSafe(fieldName);
-        var path = segments.subList(1, segments.size()).stream().map(config.naming).toList();
+        var path = segments.subList(1, segments.size()).stream()
+                .map(seg -> INDEX_PATTERN.matcher(seg).matches() ? seg : config.naming.apply(seg))
+                .toList();
         return "%s #>> '{%s}'".formatted(
                 columnExpr(segments.get(0)),
                 String.join(",", path));
@@ -323,7 +344,7 @@ public abstract class Filaments<T> {
     @SneakyThrows
     public Integer create(DSLContext db, List<T> data) {
         if (data == null || data.isEmpty()) {
-            throw new Error("新增数据为空");
+            throw new FilamentsError("新增数据为空");
         }
 
         var objectFields = List.of(this.dataClass.getDeclaredFields());
@@ -341,7 +362,7 @@ public abstract class Filaments<T> {
             // 元素为 null 先退出：否则 before 钩子拿到 null，或一路走到反射取值处抛 NPE，都定位不到是第几条
             var item = data.get(i);
             if (item == null) {
-                throw new Error("新增数据第 %s 条为 null".formatted(i));
+                throw new FilamentsError("新增数据第 %s 条为 null".formatted(i));
             }
 
             // 自定义预处理（以钩子返回值为准，支持返回新对象）
@@ -351,7 +372,7 @@ public abstract class Filaments<T> {
             var validator = defaultValidator(initValidator(), row);
             var result = validator.validate(row);
             if (!result.isValid()) {
-                throw new Error(result.getFirst().message());
+                throw new FilamentsError(result.getFirst().message());
             }
 
             var values = new ArrayList<>();
@@ -399,7 +420,7 @@ public abstract class Filaments<T> {
         var validator = defaultValidator(initValidator(), data);
         var result = validator.validate(data);
         if (!result.isValid()) {
-            throw new Error(result.getFirst().message());
+            throw new FilamentsError(result.getFirst().message());
         }
 
         UpdateQuery<Record> q = db.updateQuery(tableRef());
@@ -442,7 +463,7 @@ public abstract class Filaments<T> {
             rawConditions.add(raw);
         }
 
-        var spec = specBuilder.parse(query, null);
+        var spec = specBuilder.parse(query);
 
         buildSelectFieldsFromSpec(q, spec);
         q.addConditions(buildConditionFromSpec(spec, rawConditions));
@@ -563,6 +584,10 @@ public abstract class Filaments<T> {
             case FieldCondition.NOT_BETWEEN -> condition(String.format("%s not between (%s)", funcChainResult, specBuilder.buildHolder(value, "and")), value);
             case FieldCondition.LIKE -> condition(String.format("%s like %s", funcChainResult, specBuilder.buildHolder(value, ",")), value);
             case FieldCondition.NOT_LIKE -> condition(String.format("%s not like %s", funcChainResult, specBuilder.buildHolder(value, ",")), value);
+            // 空值判定不带绑定参数：键上的值（=1 / 留空 / 任意内容）一律忽略，只渲染谓词本身。
+            // 取反不需要专门语法：lg 里 !(name|isNull) 即 NOT (... is null)
+            case FieldCondition.IS_NULL -> condition("%s is null".formatted(funcChainResult));
+            case FieldCondition.IS_NOT_NULL -> condition("%s is not null".formatted(funcChainResult));
             case FieldCondition.INTERSECT -> {
                 // 值不进 SQL 文本：经 jsonb_path_exists 的 vars 绑定参数传入（jsonpath 里用 @ == $qN 引用）
                 var preds = new ArrayList<String>();
@@ -578,7 +603,7 @@ public abstract class Filaments<T> {
                 yield condition(str, binds);
             }
             case FieldCondition.EQ -> condition(String.format("%s = ?", funcChainResult), value);
-            default -> throw new IllegalStateException("Unknown operator: " + fc.getOperator());
+            default -> throw new FilamentsError("Unknown operator: " + fc.getOperator());
         };
     }
 
@@ -615,7 +640,7 @@ public abstract class Filaments<T> {
             var idx = i;
             if (jsonFields.contains(rowFields[i].getName())) {
                 // 按 String.class 取值：jOOQ 内建转换器把 JSON/JSONB/varchar 统一拆成原始文本，
-                // 不经过 org.jooq 自有 JSON 类型（拆包语义见 JsonStringProbeTest）
+                // 不经过 org.jooq 自有 JSON 类型，再由 Jackson 按模型类型反序列化
                 values[idx] = r -> mapper.readValue(r.get(idx, String.class), type);
             } else if (java.time.temporal.Temporal.class.isAssignableFrom(type)) {
                 values[idx] = r -> r.get(idx, type);
@@ -624,7 +649,7 @@ public abstract class Filaments<T> {
                         || type == java.sql.Time.class || type == java.sql.Date.class) {
                     // 刻意响亮失败：util/sql 日期承载不了 timestamptz 的 offset 语义，
                     // 任何折算路线都是按某个时区静默改值；模型请改用 java.time（见探针测试）
-                    throw new Error("时间字段 " + rowFields[idx].getName() + " 声明为 " + type.getSimpleName()
+                    throw new FilamentsError("时间字段 " + rowFields[idx].getName() + " 声明为 " + type.getSimpleName()
                             + "：请改用 OffsetDateTime / Instant / LocalDateTime");
                 }
                 values[idx] = r -> {

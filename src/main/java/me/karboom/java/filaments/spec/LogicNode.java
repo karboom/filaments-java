@@ -70,6 +70,8 @@ public class LogicNode {
             case FieldCondition.LIKE -> "LIKE";
             case FieldCondition.NOT_LIKE -> "NOT LIKE";
             case FieldCondition.INTERSECT -> "INTERSECT";
+            case FieldCondition.IS_NULL -> "IS NULL";
+            case FieldCondition.IS_NOT_NULL -> "IS NOT NULL";
             default -> op;
         };
     }
