@@ -123,7 +123,7 @@ class FilamentsConfigTest {
         @Test
         void instancesAreIndependent() {
             var other = new FilamentsConfig();
-            config.pageSize = 7;
+            config.pageSize = 7L;
             assertAll(
                     () -> assertThat(config.pageSize).isEqualTo(7),
                     () -> assertThat(other.pageSize).isEqualTo(20));

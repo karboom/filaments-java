@@ -135,11 +135,15 @@ public class FilamentsConfig {
      */
     public List<String> sqlFuncList = PG_FUNCS;
 
-    /** pages() 未指定 p 时的页码 */
-    public Integer page = 1;
+    /**
+     * pages() 未指定 p 时的页码。
+     * <p>分页数值（页码/页大小/offset/total）全链路统一 Long：int 域的 (p-1)*pc 会溢出成
+     * 负数渲染进 SQL，total 超过 21 亿时 Integer.valueOf 直接炸。
+     */
+    public Long page = 1L;
 
     /** pages() 未指定 pc 时的页大小 */
-    public Integer pageSize = 20;
+    public Long pageSize = 20L;
 
     /**
      * 所有 JSON 读写（jsonb 字段编解码 + 结果行映射）共用的唯一 mapper。

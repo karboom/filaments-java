@@ -850,7 +850,7 @@ public abstract class Filaments<T> {
                         countKey, count.isEmpty() ? "无结果行" : count.getFirst().keySet()));
             }
             try {
-                res.total = Integer.valueOf(raw.toString());
+                res.total = Long.valueOf(raw.toString());
             } catch (NumberFormatException e) {
                 throw new FilamentsError("分页计数列 %s 不是整数: %s".formatted(countKey, raw), e);
             }

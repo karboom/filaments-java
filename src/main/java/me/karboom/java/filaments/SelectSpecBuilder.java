@@ -228,10 +228,10 @@ public class SelectSpecBuilder {
             return;
         }
 
-        var pc = positiveInt(query, "pc");
+        var pc = positiveLong(query, "pc");
         spec.setLimit(pc);
         if (query.containsKey("p")) {
-            spec.setOffset((positiveInt(query, "p") - 1) * pc);
+            spec.setOffset((positiveLong(query, "p") - 1) * pc);
         }
     }
 
@@ -239,12 +239,14 @@ public class SelectSpecBuilder {
      * 分页参数取整数：非数字、非正数都指到「哪个键、传了什么」。
      * <p>正数不是额外要求而是必需的：{@code pc=0} 或 {@code p=0} 会渲染成 {@code limit 0} /
      * {@code offset -20} 这类合法但语义相反的 SQL，报错点跑到 DB 侧，看不出是参数问题。
+     * <p>用 Long 而非 Integer：offset = (p-1)*pc 在 int 域会溢出成负数再渲染进 SQL，
+     * long 域则能原样交给 PG 判定；与 total 的 bigint 保持同一数值空间。
      */
-    private Integer positiveInt(Map<String, Object> query, String key) {
+    private Long positiveLong(Map<String, Object> query, String key) {
         var raw = String.valueOf(query.get(key));
 
         try {
-            var num = Integer.parseInt(raw);
+            var num = Long.parseLong(raw);
             if (num <= 0) {
                 throw new FilamentsError("分页参数 %s 必须是正整数，实际: %s".formatted(key, raw));
             }

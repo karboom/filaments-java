@@ -36,7 +36,7 @@ jobs:
           --health-retries 20
 
     env:
-      DB_JDBC_URL: jdbc:postgresql://localhost:5432/filaments?currentSchema=filaments_test&stringtype=unspecified
+      DB_JDBC_URL: "jdbc:postgresql://localhost:5432/filaments?currentSchema=filaments_test&stringtype=unspecified"
       DB_USER: test
       DB_PASSWORD: ""
 
@@ -48,15 +48,15 @@ jobs:
           distribution: temurin
           java-version: "24"
 
-      - name: Gradle build + check
+      # 缓存 wrapper 发行版与依赖；不传 arguments，构建留给下面的显式步骤
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build & check
         # check = test + checkstyleMain/Test + jacocoTestCoverageVerification（覆盖率门槛 85%/75%）
-        id: gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          arguments: --no-daemon check
+        run: ./gradlew --no-daemon check
 
       - name: Upload test report
-        if: failure() && steps.gradle.outcome == 'failure'
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: test-report
