@@ -5,12 +5,16 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.jooq.SQLDialect.POSTGRES;
+import static org.jooq.impl.DSL.field;
+import static org.jooq.impl.DSL.name;
 import static org.jooq.impl.DSL.using;
 
 /**
@@ -28,6 +32,7 @@ import static org.jooq.impl.DSL.using;
  * │ 聚合/分组字段    │ ✓        │ ✓        │ ✓        │ —           │ FilamentsError│
  * │ 函数链名/参数    │ —        │ —        │ ✓        │ —           │ IllegalArg    │
  * │ 条件值(任意)     │ ✓        │ ✓        │ ✓        │ ✓           │ 绑定不进文本  │
+ * │ raw 的值形态    │ —        │ —        │ —        │ —           │ 非Condition拒绝│
  * └────────────────┴──────────┴──────────┴──────────┴─────────────┴──────────────┘
  * </pre>
  */
@@ -194,6 +199,46 @@ class InjectionSafetyTest {
         void intersectValueNotInlined() {
             var sql = filament.build(using(POSTGRES), Map.of("tags|intersect", "a';drop")).getSQL();
             assertThat(sql).doesNotContain("';drop").contains("jsonb_path_exists");
+        }
+    }
+
+    // endregion
+
+    // region raw 原生条件（只认 Condition 实例，其余形态拒绝而非丢弃）
+
+    @Nested
+    class RawCondition {
+
+        @Test
+        void sqlStringPayloadRejectedNotDropped() {
+            // 查询 map 来自外部输入时最容易把条件写成字符串；丢弃它就是 WHERE 少一项、结果集静默变大
+            assertThatThrownBy(() -> filament.build(using(POSTGRES), Map.of("raw", "id = 1")))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("raw 只接受 jOOQ Condition")
+                    .hasMessageContaining("id = 1");
+        }
+
+        @Test
+        void collectionPayloadRejected() {
+            assertThatThrownBy(() -> filament.build(using(POSTGRES), Map.of("raw", List.of("id", 1))))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("raw 只接受 jOOQ Condition");
+        }
+
+        @Test
+        void nullRawAddsNoCondition() {
+            var query = new HashMap<String, Object>();
+            query.put("raw", null);
+            assertThat(filament.build(using(POSTGRES), query).getSQL()).doesNotContain("where");
+        }
+
+        @Test
+        void conditionJoinedByAnd() {
+            var q = filament.build(using(POSTGRES), Map.of("raw", field(name("age")).gt(30), "name", "x"));
+            assertAll(
+                    () -> assertThat(q.getSQL()).contains("\"age\" > ?").contains("\"name\" = ?"),
+                    // 两个条件的值都是绑定参数（文本里恰好两个 ?），raw 也不例外
+                    () -> assertThat(q.getSQL().split("\\?", -1)).hasSize(3));
         }
     }
 

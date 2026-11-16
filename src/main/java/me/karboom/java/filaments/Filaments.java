@@ -505,10 +505,16 @@ public abstract class Filaments<T> {
         SelectQuery<Record> q = db.selectQuery();
         q = this.buildSub(q, sub);
 
-        List<Condition> rawConditions = new ArrayList<>();
-        if (query.get("raw") instanceof Condition raw) {
-            rawConditions.add(raw);
-        }
+        // raw 供内部/子类带原生 Condition 进来：只有拿得准来历的代码才构造得出 Condition 实例。
+        // 其余形态（如写成字符串 SQL 片段）必须拒绝而不是丢弃——丢弃就是 WHERE 少一个条件，
+        // 结果集静默变大，调用方看不出自己查错了。
+        var raw = query.get("raw");
+        List<Condition> rawConditions = switch (raw) {
+            case null -> List.of();
+            case Condition condition -> List.of(condition);
+            default -> throw new FilamentsError("raw 只接受 jOOQ Condition 实例，实际 %s: %s".formatted(
+                    raw.getClass().getName(), raw));
+        };
         q.addConditions(buildConditionFromSpec(spec, rawConditions));
 
         return q;
