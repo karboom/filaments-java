@@ -1,34 +1,38 @@
 -- =====================================================================
--- filaments 集成测试基础表（start_test_env.sh 初始化空库时导入 user schema）
--- 测试代码不再 DROP/CREATE 表结构，仅清行；种子数据由 Filaments.create 自举写入
+-- filaments 集成测试建表脚本：表结构唯一真相
+--   1) TestDb.initTables() 读取本文件并在连接上逐条执行（幂等，可重复运行测试）
+--   2) start_test_env.sh 首次拉起空容器时导入本文件，便于 psql 手工查看
+--   所有对象显式限定 filaments_test schema，不依赖连接串里的 search_path。
+--   新增/修改测试模型字段只需改这里，Java 侧不再另存 DDL。
+--   约束：注释里不要出现分号，TestDb 按分号切分语句。
 -- =====================================================================
 
--- ORM 主测试表：对应 src/test/.../User.java
---   roles/action_ids: JSONB 数组列（验证 handleJson 与 #>> 路径查询）
---   extra:            JSONB 对象列（验证 nest 校验与嵌套解析）
---   create_time:      TIMESTAMPTZ（OffsetDateTime 模型）
---   注意：不建 geometry 列（测试镜像为纯 postgres，无 postgis）
-CREATE TABLE IF NOT EXISTS "filaments_user" (
-    id BIGINT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    wechat_id varchar(20) NOT NULL,
-    type varchar(1) not null,
-    roles JSONB DEFAULT '[]'::jsonb,
-    extra JSONB not null DEFAULT '{}'::jsonb,
-    create_time TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    location varchar(50) NOT NULL,
-    action_ids JSONB DEFAULT '[]'::jsonb
+create schema if not exists filaments_test;
+
+-- 主测试表，对应 model/User.java：字符串主键 + snake 列名 + jsonb 结构化列 + timestamptz
+create table if not exists filaments_test.filaments_user (
+    id          varchar(64) primary key,
+    name        varchar(64),
+    age         int4,
+    wechat_id   varchar(64),
+    type        varchar(16),
+    tags        jsonb,
+    address     jsonb,
+    profile     jsonb,
+    balance     numeric(18, 4),
+    create_time timestamptz
 );
 
--- 自定义主键（pk=uid）全链路测试表：对应测试内 Mini 模型
-CREATE TABLE IF NOT EXISTS "user_mini_pk" (
-    uid BIGINT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL
+-- 驼峰列名表，对应 model/CamelUser.java（FilamentsConfig.naming = camel）
+create table if not exists filaments_test.filaments_camel (
+    id           varchar(64) primary key,
+    name         varchar(64),
+    "wechatId"   varchar(64),
+    "createTime" timestamptz
 );
 
--- 驼峰列名测试表：对应 FilamentsConfigTest（columnNaming=CAMEL）
-CREATE TABLE IF NOT EXISTS "filaments_camel" (
-    "userId" BIGINT PRIMARY KEY,
-    "wechatId" VARCHAR(20) NOT NULL,
-    "createTime" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+-- 遗留时间列表，对应 model/LegacyUser.java（java.util.Date 读路径应报错）
+create table if not exists filaments_test.filaments_legacy (
+    id          varchar(64) primary key,
+    create_time timestamptz
 );

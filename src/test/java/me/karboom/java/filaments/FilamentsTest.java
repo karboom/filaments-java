@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -17,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertAll;
 
 /**
- * CRUD 全链路（真库 user_test，schema filaments_test，不 mock）。
+ * CRUD 全链路（真库 filaments，schema filaments_test，不 mock）。
  *
  * 说明：doQuery 以 select 字段名映射模型；无 rt 的查询（含 getByIds）现在
  * 以全模型列作为投影，可完整映射。
@@ -27,10 +28,13 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  * ┌──────────┬───────────┬───────────┬───────────┬──────────────┐
  * │ data 数  │ 字段含 null│ 含 jsonb  │ 含 enum   │ 校验          │
  * ├──────────┼───────────┼───────────┼───────────┼──────────────┤
+ * │ 0        │ –         │ –         │ –         │ 空列表→Error  │
  * │ 1        │ ✓         │ ✓         │ ✓         │ 通过          │
  * │ N        │ ✓         │ ✓         │ ✓         │ 失败→Error    │
  * └──────────┴───────────┴───────────┴───────────┴──────────────┘
  * </pre>
+ *
+ * 另：列表本身为空/null、以及列表内元素为 null，都在拼 SQL 前抛 Error（见 Create 内三条 rejected 用例）。
  */
 @Timeout(30)
 class FilamentsTest {
@@ -73,6 +77,34 @@ class FilamentsTest {
             var rows = f.create(TestDb.db(), List.of(TestFilaments.seed("1"), TestFilaments.seed("2")));
             assertThat(rows).isEqualTo(2);
             assertThat(TestDb.db().fetch("select id from filaments_user")).hasSize(2);
+        }
+
+        @Test
+        void emptyListRejected() {
+            assertAll(
+                    () -> assertThatThrownBy(() -> f.create(TestDb.db(), List.of()))
+                            .isInstanceOf(Error.class)
+                            .hasMessageContaining("新增数据为空"),
+                    // 空列表绝不能落到 insert ... default values 上写出一行全默认值数据
+                    () -> assertThat(TestDb.db().fetch("select id from filaments_user")).isEmpty());
+        }
+
+        @Test
+        void nullListRejected() {
+            assertThatThrownBy(() -> f.create(TestDb.db(), (List<User>) null))
+                    .isInstanceOf(Error.class)
+                    .hasMessageContaining("新增数据为空");
+        }
+
+        @Test
+        void nullElementRejectedTellsIndexAndWritesNothing() {
+            var rows = Arrays.asList(TestFilaments.seed("1"), null, TestFilaments.seed("3"));
+            assertAll(
+                    () -> assertThatThrownBy(() -> f.create(TestDb.db(), rows))
+                            .isInstanceOf(Error.class)
+                            .hasMessageContaining("第 1 条"),
+                    // 逐行校验后统一 execute，中途抛错不应留下半批数据
+                    () -> assertThat(TestDb.db().fetch("select id from filaments_user")).isEmpty());
         }
 
         @Test

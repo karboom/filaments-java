@@ -3,6 +3,7 @@ import com.vanniktech.maven.publish.DeploymentValidation
 plugins {
     id("java-library")
     id("checkstyle")
+    id("jacoco")
     id("com.vanniktech.maven.publish") version "0.37.0"
     id ("io.freefair.lombok") version "9.5.0"
 }
@@ -21,7 +22,6 @@ dependencies {
     api("am.ik.yavi:yavi:0.17.2")
 
     implementation("cn.hutool:hutool-all:5.8.48")
-    implementation("net.postgis:postgis-jdbc:2025.1.1")
 
     testImplementation(platform("org.junit:junit-bom:5.14.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -81,6 +81,42 @@ mavenPublishing {
 
 tasks.test {
     useJUnitPlatform()
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+jacoco {
+    toolVersion = "0.8.16"
+}
+
+tasks.jacocoTestReport {
+    // 不加 dependsOn(test)：作为 test 的 finalizer，测试失败时报告照样产出
+    reports {
+        html.required = true
+        xml.required = true
+        csv.required = false
+    }
+}
+
+tasks.jacocoTestCoverageVerification {
+    // 阈值基于实测（line 89%/branch 80%）下调留余量；聚合投影泄漏 bug 修复后可上调
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                value = "COVEREDRATIO"
+                minimum = "0.85".toBigDecimal()
+            }
+            limit {
+                counter = "BRANCH"
+                value = "COVEREDRATIO"
+                minimum = "0.75".toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(tasks.jacocoTestCoverageVerification)
 }
 
 checkstyle {

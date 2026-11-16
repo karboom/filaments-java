@@ -152,6 +152,10 @@ public abstract class Filaments<T> {
         return rf.get(data);
     }
 
+    /**
+     * 写前钩子，create/update 均调用。
+     * 基类以返回值为准：实现可以原地修改，也可以返回新对象。
+     */
     public T before (T data) {
         return data;
     }
@@ -169,15 +173,20 @@ public abstract class Filaments<T> {
     }
 
     /**
-     * 过滤函数名：不在白名单内直接拒绝（此前返回 "" 会拼出坏 SQL）
+     * 过滤聚合函数名（{@code countDistinct} 这类语法糖不参与，由调用方先行拦下）。
+     * 校验标准与 {@code SelectSpecBuilder.buildFuncChain} 对齐：trim 后忽略大小写精确命中
+     * {@link FilamentsConfig#sqlFuncList}，命中不了直接拒绝。
+     * 不用 contains 模糊匹配——旧写法会让 "counter" 静默降级成 count、"minmax" 命中白名单首个包含项。
+     *
+     * @param funcName 用户传入的聚合名
+     * @return 白名单中的规范函数名
      */
     private String funcNameSafe(String funcName) {
-        for (String func : config.sqlFuncList) {
-            if (funcName.toLowerCase().contains(func)) {
-                return func;
-            }
-        }
-        throw new Error("不支持的聚合函数: " + funcName);
+        var name = funcName.trim();
+        return config.sqlFuncList.stream()
+                .filter(f -> f.equalsIgnoreCase(name))
+                .findFirst()
+                .orElseThrow(() -> new Error("不支持的聚合函数: " + funcName));
     }
 
     /**
@@ -304,11 +313,19 @@ public abstract class Filaments<T> {
     }
 
     /**
-     * 新增数据
+     * 新增数据（批量），返回受影响行数。
      *
+     * <p>入参问题在拼 SQL 之前全部抛出 {@link Error}：空列表与 null 列表（不抛的话只声明 columns
+     * 没有 values 段，jOOQ 渲染成 {@code insert into t default values}，那是合法语句，会真写出
+     * 一行全默认值数据）、列表内元素为 null（异常带下标）。
+     * <p>校验逐行做但只在最后 execute 一次，因此任一行不过就不会有部分写入。
      */
     @SneakyThrows
     public Integer create(DSLContext db, List<T> data) {
+        if (data == null || data.isEmpty()) {
+            throw new Error("新增数据为空");
+        }
+
         var objectFields = List.of(this.dataClass.getDeclaredFields());
 
         var dbFields = objectFields.stream()
@@ -319,14 +336,16 @@ public abstract class Filaments<T> {
                 .insertInto(tableRef())
                 .columns(dbFields);
 
-
-
         for (var i = 0; i < data.size(); i++) {
             // Todo 是否需要先copy一份对象，这种写法需要对象实现Cloneable接口？
-            var row = data.get(i);
+            // 元素为 null 先退出：否则 before 钩子拿到 null，或一路走到反射取值处抛 NPE，都定位不到是第几条
+            var item = data.get(i);
+            if (item == null) {
+                throw new Error("新增数据第 %s 条为 null".formatted(i));
+            }
 
-            // 自定义预处理
-            this.before(row);
+            // 自定义预处理（以钩子返回值为准，支持返回新对象）
+            var row = this.before(item);
 
             // Todo 自定义模型处理函数
             var validator = defaultValidator(initValidator(), row);
@@ -374,7 +393,15 @@ public abstract class Filaments<T> {
     // region 修改
     @SneakyThrows
     public void updateByIds(DSLContext db, List<String> ids, T data) {
-        // Todo 补充所有的name函数?
+        // 写前处理与 create 对称：钩子返回值为准；defaultValidator 跳过 null 根字段，
+        // 只校验本次实际写入的非 null 字段，适配部分更新语义
+        data = this.before(data);
+        var validator = defaultValidator(initValidator(), data);
+        var result = validator.validate(data);
+        if (!result.isValid()) {
+            throw new Error(result.getFirst().message());
+        }
+
         UpdateQuery<Record> q = db.updateQuery(tableRef());
         var fields = this.dataClass.getDeclaredFields();
 
@@ -744,23 +771,19 @@ public abstract class Filaments<T> {
 
             for (var f: value) {
                 var fieldName = fieldNameSafe((String) f);
-                var funcName = funcNameSafe(func);
                 // 防注入：字段名逐段过标识符白名单校验，拒绝结构字符拼入 SQL
                 identsSafe(fieldName);
                 var sqlField = fieldName.contains(".") ? jsonKeyExpr(fieldName) : columnExpr(fieldName);
 
-                var alias = aggAlias(funcName, fieldName);
-                var fieldExpr = String.format("%s(%s)", funcName, sqlField);
+                // countDistinct 先于白名单拦下：它是关键字级语法，漏给精确匹配只会被拒
+                var sugar = func.trim().equalsIgnoreCase("countDistinct");
+                var funcName = sugar ? "countDistinct" : funcNameSafe(func);
+                var fieldExpr = sugar
+                        ? "count(distinct %s)".formatted(sqlField)
+                        : "%s(%s)".formatted(funcName, sqlField);
 
-                if (func.equals("countDistinct")) {
-                    funcName = "count";
-                    alias = aggAlias(func, fieldName);
-                    fieldExpr = String.format("%s(distinct %s)", funcName, sqlField);
-                }
-
-                base.addSelect(field(fieldExpr).as(alias));
+                base.addSelect(field(fieldExpr).as(aggAlias(funcName, fieldName)));
             }
-
         }
 
         return base;
