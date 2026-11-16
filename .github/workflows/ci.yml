@@ -1,0 +1,67 @@
+# 与本地测试环境的约定对齐（script/start_test_env.sh / TestDb）：
+#   - 编译用 options.release=22，但源码含 JEP 456 未命名形参，CI JDK 必须 >= 22，取 24
+#   - 集成测试连真实 PostgreSQL，不 mock；schema 与建表由 TestDb 幂等执行 script/base.sql，
+#     所以 service 只需给一个空库（trust 免密即可）
+#   - 本地默认端口 5433，CI 里 service 直连 5432，用 DB_JDBC_URL 覆盖默认值
+name: CI
+
+on:
+  push:
+    branches: [main, test]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # 同一分支的旧运行直接取消，PG service 与 Gradle 缓存都不必浪费
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      pg:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: filaments
+          POSTGRES_USER: test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d filaments"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DB_JDBC_URL: jdbc:postgresql://localhost:5432/filaments?currentSchema=filaments_test&stringtype=unspecified
+      DB_USER: test
+      DB_PASSWORD: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "24"
+
+      - name: Gradle build + check
+        # check = test + checkstyleMain/Test + jacocoTestCoverageVerification（覆盖率门槛 85%/75%）
+        id: gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          arguments: --no-daemon check
+
+      - name: Upload test report
+        if: failure() && steps.gradle.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            build/reports/tests/
+            build/reports/checkstyle/
+            build/reports/jacoco/
+          retention-days: 7
