@@ -259,6 +259,30 @@ class SelectSpecBuilderTest {
         void intersectOperatorMapped() {
             assertThat(fc("tags|intersect", "a,b").getOperator()).isEqualTo(FieldCondition.INTERSECT);
         }
+
+        @Test
+        void commaStringKeptWhole() {
+            // 解析期不拆逗号：多值简写保持一个元素，形态由渲染期按操作符决定
+            assertThat(fc("id|in", "1,2").getValues()).containsExactly("1,2");
+        }
+
+        @Test
+        void collectionValueKeptWhole() {
+            // 解析期一个元素都不动：集合本身作为唯一元素收着，展开在渲染期按操作符做
+            assertThat(fc("name|in", List.of("张,三", "user-2")).getValues())
+                    .containsExactly(List.of("张,三", "user-2"));
+            assertThat(fc("name|in", new LinkedSet("a", "b")).getValues())
+                    .singleElement().isInstanceOf(LinkedSet.class);
+        }
+
+        @Test
+        void nullValueKeptAsSingleNull() {
+            var key = "name|isNull";
+            var query = new LinkedHashMap<String, Object>();
+            query.put(key, null);
+            assertThat(builder.buildFieldCondition(query, key).getValues())
+                    .containsExactly((Object) null);
+        }
     }
 
     // endregion

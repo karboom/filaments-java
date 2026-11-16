@@ -122,7 +122,11 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | p        | 指定当前页码                     | 1      | ?p=3         | ```limit 20 offset 40```                |
 | pc       | 指定页内行数                     | 20     | ?pc=18       | ```limit 18 offset 0```                 |
 | od       | 指定排序规则                     | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
-| pg       | 是否需要计算分页(仅 getByPages 生效) | 0      | ?pg=1        | ``` count(*) alongside limit ? offset ? ``` |
+| pg       | 是否需要计算分页(仅 getByPages 生效) | 0      | ?pg=1        | ``` count(*) 不带 limit/offset，行结果才分页 ``` |
+
+> `rt` / `p` / `pc` / `od` / `pg` 只描述"行结果"，因此只对 `get` / `getByPages` / `getByIds` 生效；
+> `aggregation` 只取其中的条件（含 `lg` / `raw`），结果形态由 `group` 与聚合目标决定，
+> 同一份 query 直接喂给两者是安全的（分页不会截断 count，投影不会混进 GROUP BY）。
 
 ### 字段表达式
 
@@ -189,6 +193,28 @@ var users = filaments.get(db, new HashMap<>() {{
 | ?name&#124;isNotNull=     | ```  where `name` is not null ```                    |
 
 > `isNull` / `isNotNull` 不取参数：键上绑的值（留空、`=1`、`=任意`）一律忽略，因为谓词没有比较对象。它们同样可以接在函数链后面（`extra.age|substr(1,2)|isNull`）。取反不需要额外操作符，`lg` 里写 `!(name|isNull)` 即可。
+
+### 值的形态
+
+值全部走占位符绑定，但「一个键上绑几个值」由操作符决定——逗号只在天生多值的地方才是分隔符：
+
+| 操作符 | 值个数 | String 怎么解释 |
+| --- | --- | --- |
+| `in` / `notIn` / `intersect` | 不限 | 按 `,` 拆成多个值（`?id|in=1,2`） |
+| `between` / `notBetween` | 恰好 2 | 按 `,` 拆；拆出来不是两个就抛错 |
+| `eq` / `ne` / `gt` / `ge` / `lt` / `le` / `like` / `notLike` | 恰好 1 | **整串作一个值**，逗号只是普通字符 |
+| `isNull` / `isNotNull` | 不取值 | 键上绑什么都忽略（也不计数） |
+
+- 单值操作符不拆逗号，所以含逗号的 like 模式、JSON 文本、名字里的逗号直接写就行，无需任何转义：`?name=张,三`、`?profile={"a":1,"b":2}`、`?name|like=%,%`。
+- 反过来，往单值操作符上绑多个值会**抛错**，而不是静默只取第一个（jOOQ 对多余绑定值是悄悄丢弃的，不抛就是查错数据）。多模式 `like` 请用条件别名 + `lg` 组合：`l1::name|like=a%`、`l2::name|like=%b`、`lg=(l1,l2)`。
+- 多值操作符里**某个元素本身含逗号**（一组 JSON 文本、含逗号的名字）时传 `List` / `Set`——容器是逐元素取值的，元素内部的逗号不再被拆：
+
+```java
+var users = filaments.get(db, Map.of("name|in", List.of("张,三", "user-2")));
+```
+
+- 「一个字符串」和「装了单个字符串的集合」是两种形态：`"a,b"` 给 `in` 是两个值，`List.of("a,b")` 给 `in` 是一个值（内容含逗号）。
+- 拆不拆、要几个都在**渲染期**决定，解析期一个元素都不动——`SelectSpec` / `LogicNode#toTreeString()` 里 `values` 永远只有一个元素，就是键上绑的那个东西本身。
 
 ### 命名与配置
 

@@ -13,6 +13,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.jooq.SQLDialect.POSTGRES;
 import static org.jooq.impl.DSL.using;
 
@@ -35,6 +36,7 @@ import static org.jooq.impl.DSL.using;
  * │ 9  │ `tags`       │ [substr(1,2)]│ LT           │
  * └────┴──────────────┴──────────────┴──────────────┘
  * 异常路径（负向）：非法字段名 / 函数链越白名单 / 未知操作符。
+ * 值的形态（单值不拆逗号、多值简写才拆、个数校验）见 ValueShape 组。
  * 渲染断言用无连接 DSLContext（不 mock）；实际取数在 FilamentsTest 走真库。
  * </pre>
  */
@@ -86,7 +88,7 @@ class BuildConditionTest {
         @Test
         void combo4_between_dotted_noFunc() {
             assertThat(sql(cond("address.city", List.of(), FieldCondition.BETWEEN, 1, 10)))
-                    .isEqualTo("(\"address\" #>> '{city}' between (? and ?))");
+                    .isEqualTo("(\"address\" #>> '{city}' between ? and ?)");
         }
 
         @Test
@@ -143,9 +145,17 @@ class BuildConditionTest {
         }
 
         @Test
-        void likeMultipleValuesJoined() {
-            assertThat(sql(cond("name", List.of(), FieldCondition.LIKE, "a", "b")))
-                    .isEqualTo("(\"name\" like ? , ?)");
+        void likeKeepsCommaPatternAsSingleValue() {
+            // like 只有一个 pattern：含逗号的模式不再被拆成 `like ? , ?`（那是非法 SQL）
+            assertThat(sql(cond("name", List.of(), FieldCondition.LIKE, "a%,b%")))
+                    .isEqualTo("(\"name\" like ?)");
+        }
+
+        @Test
+        void likeMultipleValuesRejected() {
+            assertThatThrownBy(() -> sql(cond("name", List.of(), FieldCondition.LIKE, "a", "b")))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("只接受 1 个值");
         }
 
         @Test
@@ -153,6 +163,77 @@ class BuildConditionTest {
             // 值经 jsonb_build_object 绑定参数传入，jsonpath 用 $q0/$q1 引用
             assertThat(sql(cond("tags", List.of(), FieldCondition.INTERSECT, "a", "b")))
                     .isEqualTo("(jsonb_path_exists(\"tags\", '$[*] ? (@ == $q0 || @ == $q1)', jsonb_build_object('q0', ?, 'q1', ?)))");
+        }
+    }
+
+    // endregion
+
+    // region 值的形态（渲染期按占位符个数取值，不在解析期预拆）
+
+    @Nested
+    class ValueShape {
+
+        /** 内联渲染：绑定值写进 SQL，用来断言"实际绑了几个、绑的是什么" */
+        private String inlined(FieldCondition c) {
+            return using(POSTGRES).renderInlined(filament.buildConditionFromFieldCondition(c));
+        }
+
+        @Test
+        void singleValueOperatorKeepsWholeCommaString() {
+            var c = cond("name", List.of(), FieldCondition.EQ, "user-1,zzz");
+            assertAll(
+                    () -> assertThat(sql(c)).isEqualTo("(\"name\" = ?)"),
+                    // 过去：拆成两个值，jOOQ 只绑第一个 → 静默命中 user-1
+                    () -> assertThat(inlined(c)).isEqualTo("(\"name\" = 'user-1,zzz')"));
+        }
+
+        @Test
+        void jsonTextIsBoundAsOneValue() {
+            assertThat(inlined(cond("name", List.of(), FieldCondition.EQ, "{\"a\":1,\"b\":2}")))
+                    .isEqualTo("(\"name\" = '{\"a\":1,\"b\":2}')");
+        }
+
+        @Test
+        void multiValueShorthandSplitsComma() {
+            assertAll(
+                    () -> assertThat(sql(cond("id", List.of(), FieldCondition.IN, "a,b")))
+                            .isEqualTo("(\"id\" in (? , ?))"),
+                    () -> assertThat(sql(cond("id", List.of(), FieldCondition.NOT_IN, "a,b")))
+                            .isEqualTo("(\"id\" not in (? , ?))"));
+        }
+
+        @Test
+        void multiValueElementsKeepInnerComma() {
+            // 解析期把 List 原样收成一个元素，这里逐元素取，元素内部的逗号不再被拆
+            assertThat(inlined(cond("name", List.of(), FieldCondition.IN, List.of("张,三", "user-2"))))
+                    .isEqualTo("(\"name\" in ('张,三' , 'user-2'))");
+        }
+
+        @Test
+        void singleElementListIsNotCommaShorthand() {
+            // List.of("a,b") 与 "a,b" 形态不同：前者是一个含逗号的值，后者才是两个值
+            assertThat(inlined(cond("name", List.of(), FieldCondition.IN, List.of("张,三"))))
+                    .isEqualTo("(\"name\" in ('张,三'))");
+        }
+
+        @Test
+        void betweenNeedsExactlyTwoValues() {
+            assertAll(
+                    () -> assertThat(inlined(cond("age", List.of(), FieldCondition.BETWEEN, 1, 10)))
+                            .isEqualTo("(\"age\" between 1 and 10)"),
+                    () -> assertThatThrownBy(() -> sql(cond("age", List.of(), FieldCondition.BETWEEN, 1)))
+                            .isInstanceOf(FilamentsError.class)
+                            .hasMessageContaining("需要 2 个值"),
+                    () -> assertThatThrownBy(() -> sql(cond("age", List.of(), FieldCondition.NOT_BETWEEN, 1, 2, 3)))
+                            .isInstanceOf(FilamentsError.class)
+                            .hasMessageContaining("需要 2 个值"));
+        }
+
+        @Test
+        void nullCheckIgnoresValueCount() {
+            // 键上绑几个值都不进 SQL，也不参与个数校验
+            assertThat(sql(cond("name", List.of(), FieldCondition.IS_NULL, "a", "b")))
+                    .isEqualTo("(\"name\" is null)");
         }
     }
 

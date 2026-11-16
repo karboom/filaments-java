@@ -124,9 +124,19 @@ public abstract class Filaments<T> {
         // 构造期就绑好配置，子类直接用 specBuilder 字段也不会拿到 null
         this.specBuilder = new SelectSpecBuilder(config);
 
-        ParameterizedType superClass = (ParameterizedType) getClass().getGenericSuperclass();
+        // 模型类型只能从「带类型实参的子类」上取。原来的裸强转是 unchecked 的，raw 写法（extends Filaments）
+        // 不会在这里抛，ClassCastException 要等到第一次用 dataClass 才炸，报错点和原因隔着一整个查询。
+        if (!(getClass().getGenericSuperclass() instanceof ParameterizedType superClass)) {
+            throw new FilamentsError("%s 必须以带模型类型的方式继承：class %s extends Filaments<YourModel>".formatted(
+                    getClass().getName(), getClass().getSimpleName()));
+        }
 
-        this.dataClass = (Class<T>) superClass.getActualTypeArguments()[0];
+        var typeArg = superClass.getActualTypeArguments()[0];
+        if (!(typeArg instanceof Class<?> modelClass)) {
+            throw new FilamentsError("Filaments 的类型实参必须是具体模型类，实际: %s".formatted(typeArg));
+        }
+
+        this.dataClass = (Class<T>) modelClass;
 
         // 列名 -> 字段索引 + JSON 字段集：config 构造期定死，建一次即可
         var indexed = new HashMap<String, java.lang.reflect.Field>();
@@ -150,12 +160,20 @@ public abstract class Filaments<T> {
 
     /**
      * 按模型字段名读字段值（约束名用的是声明字段名，不走列名归一化）。
+     * <p>取不到字段说明 {@code initValidator} 里的约束名和模型声明对不上（改过字段名、写错层级），
+     * 这里指到模型类和字段名：这个调用发生在 yavi 遍历谓词的过程中，
+     * 裸 NoSuchFieldException 冒出去看不出是校验配置错了。
      */
     @SneakyThrows
     private Object modelValue(T data, String fieldName) {
-        var rf = dataClass.getDeclaredField(fieldName);
-        rf.setAccessible(true);
-        return rf.get(data);
+        try {
+            var rf = dataClass.getDeclaredField(fieldName);
+            rf.setAccessible(true);
+            return rf.get(data);
+        } catch (NoSuchFieldException e) {
+            throw new FilamentsError("模型 %s 没有字段 %s：initValidator 的约束名与模型声明不一致".formatted(
+                    dataClass.getSimpleName(), fieldName), e);
+        }
     }
 
     /**
@@ -454,19 +472,14 @@ public abstract class Filaments<T> {
 
     // region 查询共用
 
+    /**
+     * 行查询：基座（FROM + WHERE）+ 投影 + 排序 + 分页。
+     */
     protected SelectQuery<Record> buildSelect(DSLContext db, Map<String, Object> query, SelectQuery<Record> sub) {
-        SelectQuery<Record> q = db.selectQuery();
-        q = this.buildSub(q, sub);
-
-        List<Condition> rawConditions = new ArrayList<>();
-        if (query.get("raw") instanceof Condition raw) {
-            rawConditions.add(raw);
-        }
-
         var spec = specBuilder.parse(query);
+        var q = buildBase(db, query, spec, sub);
 
         buildSelectFieldsFromSpec(q, spec);
-        q.addConditions(buildConditionFromSpec(spec, rawConditions));
         buildOrderFromSpec(q, spec);
 
         if (spec.getLimit() != null) {
@@ -475,6 +488,25 @@ public abstract class Filaments<T> {
                 q.addOffset(spec.getOffset());
             }
         }
+
+        return q;
+    }
+
+    /**
+     * 查询基座：FROM + WHERE，只到"取哪些行"为止。
+     * 行查询在此之上叠投影/排序/分页，聚合在此之上叠 group by/聚合列——
+     * 两者的结果形态语义不同，故共用基座而不是共用完整行查询。
+     * spec 由调用方解析后传入，避免同一份 query 解析两次；raw 原生条件不走 spec，在这里直接取。
+     */
+    protected SelectQuery<Record> buildBase(DSLContext db, Map<String, Object> query, SelectSpec spec, SelectQuery<Record> sub) {
+        SelectQuery<Record> q = db.selectQuery();
+        q = this.buildSub(q, sub);
+
+        List<Condition> rawConditions = new ArrayList<>();
+        if (query.get("raw") instanceof Condition raw) {
+            rawConditions.add(raw);
+        }
+        q.addConditions(buildConditionFromSpec(spec, rawConditions));
 
         return q;
     }
@@ -490,31 +522,20 @@ public abstract class Filaments<T> {
     }
 
     /**
-     * 全模型投影：rt 缺省时替代裸 SELECT *——列清单取自构造期反射的 modelFields
-     * （排序保证语句稳定），JSON 字段与 rt 通道同样补 JSONB 类型。
-     * 模型里声明了而库里没有的列会直接 SQL 报错，符合"模型即表"的响亮失败约定。
+     * rt 通道：指定列显式投影。
+     * JSON 字段（构造期分类）补 JSONB 类型统一取值形态，varchar 存 JSON 文本的列也只是
+     * JSONB.valueOf 包装，无 DB cast 风险；时间列不补类型，doQuery 走列级映射（jOOQ 转换器）。
+     * 未指定 rt 时发 SELECT *，列清单由 doQuery 从结果集元数据取（见 doQuery）。
      */
-    private Field<?>[] modelProjection() {
-        return modelFields.keySet().stream()
-                .sorted()
-                .map(col -> jsonFields.contains(col) ? field(name(col), JSONB.class) : columnRef(col))
-                .toArray(Field<?>[]::new);
-    }
-
     private void buildSelectFieldsFromSpec(SelectQuery<Record> q, SelectSpec spec) {
         List<String> fields = spec.getSelectFields();
         if (fields != null && !fields.isEmpty()) {
             for (String part : fields) {
                 var col = config.naming.apply(fieldNameSafe(part));
-                // JSON 字段（构造期分类）补 JSONB 类型，统一取值形态；varchar 存 JSON 文本的列
-                // 也只是 JSONB.valueOf 包装，无 DB cast 风险。
-                // 时间列无需补类型：doQuery 走列级映射（jOOQ 转换器）。
                 q.addSelect(jsonFields.contains(col) ? field(name(col), JSONB.class) : columnRef(col));
             }
         } else {
-            // 不再发 SELECT *：jOOQ 动态查询的 getSelect() 对通配投影是空的，
-            // doQuery 的列级映射拿不到列清单，只会产出空壳对象
-            q.addSelect(modelProjection());
+            q.addSelect(asterisk());
         }
     }
 
@@ -562,8 +583,65 @@ public abstract class Filaments<T> {
         return condition;
     }
 
+    /**
+     * 多值形态：解析期把「键上绑的那个东西」原样收成一个元素，这里按它的真实类型摊开——
+     * 单个 String 是 DSL 简写，按逗号拆（{@code in=1,2}）；{@code Collection} 逐元素取值，
+     * 元素内部的逗号不再被拆；其余（标量、手工构造的多元素）直接作绑定序列。
+     * 不校验个数——合不合法由取值的操作符决定。
+     */
+    private Object[] manyValues(FieldCondition fc) {
+        var values = fc.getValues();
+        if (values.size() == 1) {
+            switch (values.getFirst()) {
+                case String s -> {
+                    return StrUtil.split(s, ",").toArray();
+                }
+                case Collection<?> c -> {
+                    return c.toArray();
+                }
+                case null, default -> {
+                }
+            }
+        }
+        return values.toArray();
+    }
+
+    /**
+     * 单值形态：键上绑的就是一个值——整串，含逗号的 like 模式 / JSON 文本 / 名字因此无需任何转义
+     * （只有多值操作符才认逗号分隔简写，见 {@link #manyValues}）。集合里套一个值也认。
+     *
+     * <p>多于一个值直接抛错——jOOQ 对多余绑定值是静默丢弃的（只留第一个），
+     * 不抛就是查出错数据而不是报错。
+     */
+    private Object singleValue(FieldCondition fc) {
+        var values = fc.getValues();
+        var candidates = values.size() == 1 && values.getFirst() instanceof Collection<?> c
+                ? c.toArray()
+                : values.toArray();
+        if (candidates.length != 1) {
+            throw new FilamentsError("操作符 %s 只接受 1 个值，实际 %d 个: %s".formatted(
+                    fc.getOperator(), candidates.length, Arrays.toString(candidates)));
+        }
+        return candidates[0];
+    }
+
+    /** 区间形态：必须恰好两个值（between 的两端），多给少给都抛错而不是让 DB 报错或静默截断 */
+    private Object[] rangeValues(FieldCondition fc) {
+        var values = manyValues(fc);
+        if (values.length != 2) {
+            throw new FilamentsError("操作符 %s 需要 2 个值，实际 %d 个: %s".formatted(
+                    fc.getOperator(), values.length, Arrays.toString(values)));
+        }
+        return values;
+    }
+
+    /**
+     * FieldCondition -> jOOQ Condition。
+     *
+     * <p>值的形态在这里定型：几个占位符就取几个值，与解析期无关，所以手工构造的
+     * FieldCondition（子类扩展 / {@code lg} 子树里塞的条件）也走同一套规则。
+     */
     protected Condition buildConditionFromFieldCondition(FieldCondition fc) {
-        var value = fc.getValues().toArray();
         var fieldName = fc.getField();
 
         // 防注入：普通列走 name() 引用 + 列名归一化；jsonb 路径逐段过标识符白名单校验
@@ -573,23 +651,33 @@ public abstract class Filaments<T> {
         String funcChainResult = specBuilder.buildFuncChain(sqlField, fc.getFuncChain());
 
         return switch (fc.getOperator()) {
-            case FieldCondition.NE -> condition(String.format("%s <> ?", funcChainResult), value);
-            case FieldCondition.GE -> condition(String.format("%s >= ?", funcChainResult), value);
-            case FieldCondition.GT -> condition(String.format("%s > ?", funcChainResult), value);
-            case FieldCondition.LE -> condition(String.format("%s <= ?", funcChainResult), value);
-            case FieldCondition.LT -> condition(String.format("%s < ?", funcChainResult), value);
-            case FieldCondition.IN -> condition(String.format("%s in (%s)", funcChainResult, specBuilder.buildHolder(value, ",")), value);
-            case FieldCondition.NOT_IN -> condition(String.format("%s not in (%s)", funcChainResult, specBuilder.buildHolder(value, ",")), value);
-            case FieldCondition.BETWEEN -> condition(String.format("%s between (%s)", funcChainResult, specBuilder.buildHolder(value, "and")), value);
-            case FieldCondition.NOT_BETWEEN -> condition(String.format("%s not between (%s)", funcChainResult, specBuilder.buildHolder(value, "and")), value);
-            case FieldCondition.LIKE -> condition(String.format("%s like %s", funcChainResult, specBuilder.buildHolder(value, ",")), value);
-            case FieldCondition.NOT_LIKE -> condition(String.format("%s not like %s", funcChainResult, specBuilder.buildHolder(value, ",")), value);
+            case FieldCondition.EQ -> condition("%s = ?".formatted(funcChainResult), singleValue(fc));
+            case FieldCondition.NE -> condition("%s <> ?".formatted(funcChainResult), singleValue(fc));
+            case FieldCondition.GE -> condition("%s >= ?".formatted(funcChainResult), singleValue(fc));
+            case FieldCondition.GT -> condition("%s > ?".formatted(funcChainResult), singleValue(fc));
+            case FieldCondition.LE -> condition("%s <= ?".formatted(funcChainResult), singleValue(fc));
+            case FieldCondition.LT -> condition("%s < ?".formatted(funcChainResult), singleValue(fc));
+            // like 只有一个 pattern：多模式请用别名 + lg 组合（`l1::name|like=a%`、`l2::name|like=%b`）
+            case FieldCondition.LIKE -> condition("%s like ?".formatted(funcChainResult), singleValue(fc));
+            case FieldCondition.NOT_LIKE -> condition("%s not like ?".formatted(funcChainResult), singleValue(fc));
+            case FieldCondition.IN -> {
+                var many = manyValues(fc);
+                yield condition("%s in (%s)".formatted(funcChainResult, specBuilder.buildHolder(many, ",")), many);
+            }
+            case FieldCondition.NOT_IN -> {
+                var many = manyValues(fc);
+                yield condition("%s not in (%s)".formatted(funcChainResult, specBuilder.buildHolder(many, ",")), many);
+            }
+            // 两端不加括号：`between (? and ?)` 在 PG 是语法错误
+            case FieldCondition.BETWEEN -> condition("%s between ? and ?".formatted(funcChainResult), rangeValues(fc));
+            case FieldCondition.NOT_BETWEEN -> condition("%s not between ? and ?".formatted(funcChainResult), rangeValues(fc));
             // 空值判定不带绑定参数：键上的值（=1 / 留空 / 任意内容）一律忽略，只渲染谓词本身。
             // 取反不需要专门语法：lg 里 !(name|isNull) 即 NOT (... is null)
             case FieldCondition.IS_NULL -> condition("%s is null".formatted(funcChainResult));
             case FieldCondition.IS_NOT_NULL -> condition("%s is not null".formatted(funcChainResult));
             case FieldCondition.INTERSECT -> {
                 // 值不进 SQL 文本：经 jsonb_path_exists 的 vars 绑定参数传入（jsonpath 里用 @ == $qN 引用）
+                var value = manyValues(fc);
                 var preds = new ArrayList<String>();
                 var vars = new ArrayList<String>();
                 var binds = new Object[value.length];
@@ -602,7 +690,6 @@ public abstract class Filaments<T> {
                         .formatted(sqlField, String.join(" || ", preds), String.join(", ", vars));
                 yield condition(str, binds);
             }
-            case FieldCondition.EQ -> condition(String.format("%s = ?", funcChainResult), value);
             default -> throw new FilamentsError("Unknown operator: " + fc.getOperator());
         };
     }
@@ -610,70 +697,101 @@ public abstract class Filaments<T> {
 
     /**
      * 列级直接映射（无行级 JSON 往返），挂在 fetch(RecordMapper) 上单趟完成：
-     * 逐行 Record -> T，不攒整批 Result<Record>。每列按能力阶梯取值：
+     * 逐行 Record -> T，不攒整批 Result<Record>。
+     * 列清单取首行的结果集元数据（{@code record.fields()}），不取 {@code q.getSelect()}——
+     * 后者只登记显式 Field，默认投影 {@code SELECT *} 在那里是空的，据此建策略会得到零列空壳对象。
+     * 每列按能力阶梯取值：
      *   1. JSON 字段（{@link #jsonFields}）：文本（JSON/JSONB/String 三形态）经 Jackson readValue，
      *      已是结构形态的走 convertValue；
-     *   2. 时间家族：jOOQ 转换器 record.get(i, type)；util/sql 日期在预计算段即响亮拒绝；
+     *   2. 时间家族：jOOQ 转换器 record.get(i, type)；util/sql 日期在建策略时即响亮拒绝，
+     *      因此空结果集（没有行可建策略）不做这项检查；
      *   3. 运行时值已可赋值：直取；
      *   4. 其余（数字加宽、字符串转枚举等）：Jackson convertValue 单值转换。
      * 模型里没有的列（聚合别名等）跳过；null 不写字段，保持模型默认值。
+     * 默认投影是 SELECT *，因此模型声明了而库里没有的列不会报错，只是永远取不到值。
+     * 取值失败（脏 jsonb、类型不匹配）包装为 {@link FilamentsError}，message 带行号/列名/目标类型，
+     * 底层原因保留在 cause 里。
      */
     @SneakyThrows
     protected List<T> doQuery(SelectQuery<Record> q, Boolean lock) {
         q.setForUpdate(lock);
 
-        // 列策略预计算：每查询一次把"这列怎么取值"编译成取值函数（而不是每行重跑分类逻辑），
-        // 同时读投影声明，fetch 之前就能拒绝非法时间类型
         var mapper = config.mapper;
-        var rowFields = q.getSelect().toArray(new Field<?>[0]);
-        int n = rowFields.length;
-        var targets = new java.lang.reflect.Field[n];
-        @SuppressWarnings("unchecked")
-        var values = (java.util.function.Function<Record, Object>[]) new java.util.function.Function[n];
-        for (var i = 0; i < n; i++) {
-            var mf = modelFields.get(rowFields[i].getName());
-            targets[i] = mf;
-            if (mf == null) {
-                continue;
-            }
-            var type = mf.getType();
-            var idx = i;
-            if (jsonFields.contains(rowFields[i].getName())) {
-                // 按 String.class 取值：jOOQ 内建转换器把 JSON/JSONB/varchar 统一拆成原始文本，
-                // 不经过 org.jooq 自有 JSON 类型，再由 Jackson 按模型类型反序列化
-                values[idx] = r -> mapper.readValue(r.get(idx, String.class), type);
-            } else if (java.time.temporal.Temporal.class.isAssignableFrom(type)) {
-                values[idx] = r -> r.get(idx, type);
-            } else {
-                if (type == java.util.Date.class || type == java.sql.Timestamp.class
-                        || type == java.sql.Time.class || type == java.sql.Date.class) {
-                    // 刻意响亮失败：util/sql 日期承载不了 timestamptz 的 offset 语义，
-                    // 任何折算路线都是按某个时区静默改值；模型请改用 java.time（见探针测试）
-                    throw new FilamentsError("时间字段 " + rowFields[idx].getName() + " 声明为 " + type.getSimpleName()
-                            + "：请改用 OffsetDateTime / Instant / LocalDateTime");
-                }
-                values[idx] = r -> {
-                    var raw = r.get(idx);
-                    return type.isInstance(raw) ? raw : mapper.convertValue(raw, type);
-                };
-            }
-        }
-
         var ctor = dataClass.getDeclaredConstructor();
         ctor.setAccessible(true);
 
-        
         // 映射挂在取数循环上：逐行 Record -> T，取值只剩查表
         var rows = q.fetch(new RecordMapper<Record, T>() {
+            /** 列清单：取首行的结果集元数据，不取 q.getSelect()——后者只登记显式 Field，通配投影在那里是空的 */
+            Field<?>[] rowFields;
+            java.lang.reflect.Field[] targets;
+            @SuppressWarnings("unchecked")
+            java.util.function.Function<Record, Object>[] values = new java.util.function.Function[0];
+            /** 行号（1 基）：取值失败时才知道是哪一行，逐行推进 */
+            int row = 0;
+
+            /**
+             * 列策略建表：每查询一趟把"这列怎么取值"编译成取值函数，不在每行重跑分类逻辑。
+             * 非法时间类型在这里拒绝——策略随首行建立，空结果集不会走到这一步。
+             */
+            private void initStrategies(Field<?>[] fields) {
+                this.rowFields = fields;
+                this.targets = new java.lang.reflect.Field[fields.length];
+                @SuppressWarnings("unchecked")
+                var funcs = (java.util.function.Function<Record, Object>[]) new java.util.function.Function[fields.length];
+                this.values = funcs;
+
+                for (var i = 0; i < fields.length; i++) {
+                    var mf = modelFields.get(fields[i].getName());
+                    this.targets[i] = mf;
+                    if (mf == null) {
+                        continue;
+                    }
+                    var type = mf.getType();
+                    var idx = i;
+                    if (jsonFields.contains(fields[i].getName())) {
+                        // 按 String.class 取值：jOOQ 内建转换器把 JSON/JSONB/varchar 统一拆成原始文本，
+                        // 不经过 org.jooq 自有 JSON 类型，再由 Jackson 按模型类型反序列化
+                        funcs[idx] = r -> mapper.readValue(r.get(idx, String.class), type);
+                    } else if (java.time.temporal.Temporal.class.isAssignableFrom(type)) {
+                        funcs[idx] = r -> r.get(idx, type);
+                    } else {
+                        if (type == java.util.Date.class || type == java.sql.Timestamp.class
+                                || type == java.sql.Time.class || type == java.sql.Date.class) {
+                            // 刻意响亮失败：util/sql 日期承载不了 timestamptz 的 offset 语义，
+                            // 任何折算路线都是按某个时区静默改值；模型请改用 java.time（见探针测试）
+                            throw new FilamentsError("时间字段 " + fields[idx].getName() + " 声明为 " + type.getSimpleName()
+                                    + "：请改用 OffsetDateTime / Instant / LocalDateTime");
+                        }
+                        funcs[idx] = r -> {
+                            var raw = r.get(idx);
+                            return type.isInstance(raw) ? raw : mapper.convertValue(raw, type);
+                        };
+                    }
+                }
+            }
+
             @SneakyThrows
             @Override
             public T map(Record record) {
+                if (this.targets == null) {
+                    initStrategies(record.fields());
+                }
                 var obj = ctor.newInstance();
-                for (var i = 0; i < n; i++) {
-                    if (targets[i] == null || record.get(i) == null) {
+                this.row++;
+                for (var i = 0; i < this.targets.length; i++) {
+                    if (this.targets[i] == null || record.get(i) == null) {
                         continue;
                     }
-                    targets[i].set(obj, values[i].apply(record));
+                    try {
+                        this.targets[i].set(obj, this.values[i].apply(record));
+                    } catch (ReflectiveOperationException | RuntimeException e) {
+                        // 脏 jsonb、模型类型与存量数据不匹配这类错误只在特定行出现，无法本地复现；
+                        // 底层的 message 与异常类型（Jackson 的 reference chain 等）经 cause 原样保留，
+                        // 这里只补底层说不出的坐标：第几行、哪一列、目标类型
+                        throw new FilamentsError("第 %s 行 列 %s 映射为 %s 失败".formatted(
+                                this.row, this.rowFields[i].getName(), this.targets[i].getType().getSimpleName()), e);
+                    }
                 }
                 return obj;
             }
@@ -708,18 +826,25 @@ public abstract class Filaments<T> {
         res.list = this.get(db, copyQuery);
 
         if (copyQuery.containsKey("pg")) {
-
-            copyQuery.remove("rt");
-            copyQuery.remove("od");
-            // 计数不能带分页：LIMIT/OFFSET 会作用在聚合行上，p>1 时直接查不到那行 count
-            copyQuery.remove("p");
-            copyQuery.remove("pc");
-
+            // 计数直接复用同一份 query：buildAggregation 只取条件键，rt/od/p/pc 在这里不参与，
+            // 无需在调用方剥键
             var count = this.aggregation(db, Map.of("count", this.pk), copyQuery, List.of(), null);
 
             // 与 aggregation 中的别名规则保持一致（同一个 helper，避免两处漂移）
             var countKey = aggAlias("count", this.pk);
-            res.total = Integer.valueOf(count.getFirst().get(countKey).toString());
+            var raw = count.stream().findFirst().map(r -> r.get(countKey)).orElse(null);
+
+            // 无 group by 的 count 恒返回一行，取不到列就是别名对不上；
+            // 不让 NPE（get 返回 null 再 toString）或 NumberFormatException 裸逃
+            if (raw == null) {
+                throw new FilamentsError("分页计数取不到列 %s，聚合实际返回: %s".formatted(
+                        countKey, count.isEmpty() ? "无结果行" : count.getFirst().keySet()));
+            }
+            try {
+                res.total = Integer.valueOf(raw.toString());
+            } catch (NumberFormatException e) {
+                throw new FilamentsError("分页计数列 %s 不是整数: %s".formatted(countKey, raw), e);
+            }
         }
 
 
@@ -728,7 +853,7 @@ public abstract class Filaments<T> {
 
     public List<T> getByIds(DSLContext db, List<String> ids, Boolean lock) {
         SelectQuery<Record> select = db.selectQuery();
-        select.addSelect(modelProjection());
+        select.addSelect(asterisk());
         select.addFrom(tableRef());
         select.addConditions(trueCondition().and(columnRef(this.pk).in(ids)));
 
@@ -755,24 +880,31 @@ public abstract class Filaments<T> {
 
     /**
      * 通用聚合查询函数
+     *
      * @param db
      * @param target {聚合函数: [字段]}
-     * @param query  筛选条件
+     * @param query  筛选条件（只取条件键：`rt`/`od`/`p`/`pc` 是行语义，不参与聚合，见 buildAggregation）
      * @param group  分组条件
      * @param sub
      * @return
      */
-    public List<Map<String, Object>> aggregation (DSLContext db, Map<String, Object> target, Map<String, Object> query, List<String> group, SelectQuery sub) {
+    public List<Map<String, Object>> aggregation(DSLContext db, Map<String, Object> target, Map<String, Object> query, List<String> group, SelectQuery sub) {
         var base = buildAggregation(db, target, query, group, sub);
         return base.fetch().intoMaps();
     }
 
     /**
      * 聚合查询构建（独立出来便于无连接渲染验证）
+     *
+     * <p>只复用查询基座（FROM + WHERE），结果形态完全由 group + target 决定：
+     * `rt` 的投影要丢掉（非聚合列混进 GROUP BY 场景会直接报错），
+     * `p`/`pc` 的 LIMIT/OFFSET 更要丢掉——它们会作用在聚合行上：
+     * 无 group 时聚合只有一行，带 offset 就一行不剩（count 查不到）；
+     * 有 group 时按页切掉分组行，返回的 count/sum 静默变小。
+     * 需要给分组结果翻页的，自己用 sub 包一层再聚合。
      */
     protected SelectQuery<Record> buildAggregation(DSLContext db, Map<String, Object> target, Map<String, Object> query, List<String> group, SelectQuery sub) {
-        var base = buildSelect(db, query, sub);
-        base.getSelect().clear();
+        var base = buildBase(db, query, specBuilder.parse(query), sub);
 
         for (var f: group) {
             // 防注入：分组字段做标识符校验后用 Name 引用；

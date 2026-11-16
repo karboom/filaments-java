@@ -20,8 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 /**
  * CRUD 全链路（真库 filaments，schema filaments_test，不 mock）。
  *
- * 说明：doQuery 以 select 字段名映射模型；无 rt 的查询（含 getByIds）现在
- * 以全模型列作为投影，可完整映射。
+ * 说明：doQuery 以结果集元数据的列名映射模型；无 rt 的查询（含 getByIds）发 SELECT *。
+ * 聚合只取条件键，rt/od/p/pc 不参与（见 Aggregation / ByPages）。
  *
  * <pre>
  * create 入参正交表（数据量 × 字段值形态 × 校验）：
@@ -232,7 +232,7 @@ class FilamentsTest {
 
     // endregion
 
-    // region getByIds（全模型投影，可映射字段）
+    // region getByIds（SELECT * 投影，字段可完整映射）
 
     @Nested
     class GetByIds {
@@ -352,6 +352,104 @@ class FilamentsTest {
                     "b::age|ge", 22));
             var ids = list.stream().map(u -> u.id).toList();
             assertThat(ids).containsExactlyInAnyOrder("0", "2");
+        }
+    }
+
+    // endregion
+
+    // region 值的形态（真库：含逗号的值不再被截断）
+
+    @Nested
+    class ValueShape {
+
+        /** 种一行名字/JSON 文本里带逗号的数据 */
+        private void seedCommaRows() {
+            var u = TestFilaments.seed("1");
+            u.name = "张,三";
+            u.profile = Map.of("a", "1", "b", "2");
+            f.create(TestDb.db(), List.of(u, TestFilaments.seed("2")));
+        }
+
+        @Test
+        void eqValueWithCommaMatchesWholeString() {
+            seedCommaRows();
+            var names = f.get(TestDb.db(), Map.of("rt", "name", "name", "张,三")).stream()
+                    .map(u -> u.name).toList();
+            assertThat(names).containsExactly("张,三");
+        }
+
+        @Test
+        void commaNoLongerSilentlyTruncatedToFirstSegment() {
+            seed(2);
+            // 过去："user-0,junk" 拆成两个值，jOOQ 静默丢弃多余的，只绑 user-0 → 命中一行错数据
+            assertThat(f.get(TestDb.db(), Map.of("rt", "id", "name", "user-0,junk"))).isEmpty();
+        }
+
+        @Test
+        void jsonbTextWithCommaMatchedByEquality() {
+            seedCommaRows();
+            var raw = TestDb.db().fetchValue(
+                    "select profile::text from filaments_user where id = '1'", String.class);
+            assertThat(f.get(TestDb.db(), Map.of("rt", "id", "profile", raw))).hasSize(1);
+        }
+
+        @Test
+        void likePatternMayContainComma() {
+            seedCommaRows();
+            var names = f.get(TestDb.db(), Map.of("rt", "name", "name|like", "%,%")).stream()
+                    .map(u -> u.name).toList();
+            assertThat(names).containsExactly("张,三");
+        }
+
+        @Test
+        void inListElementMayContainComma() {
+            seedCommaRows();
+            var ids = f.get(TestDb.db(), Map.of("rt", "id", "name|in", List.of("张,三", "user-2"))).stream()
+                    .map(u -> u.id).toList();
+            assertThat(ids).containsExactlyInAnyOrder("1", "2");
+        }
+
+        @Test
+        void singleElementListIsNotCommaShorthand() {
+            seed(2);
+            // List 里只有一个元素 = 一个值（哪怕它含逗号），不等于 "a,b" 那种多值简写
+            assertThat(f.get(TestDb.db(), Map.of("rt", "id", "name|in", List.of("user-1,user-2")))).isEmpty();
+        }
+
+        @Test
+        void betweenRendersTwoBounds() {
+            seed(5); // age 20..24
+            var ids = f.get(TestDb.db(), Map.of("rt", "id", "age|between", "21,23")).stream()
+                    .map(u -> u.id).toList();
+            assertThat(ids).containsExactlyInAnyOrder("1", "2", "3");
+        }
+
+        @Test
+        void betweenWrongValueCountRejected() {
+            seed(1);
+            assertAll(
+                    () -> assertThatThrownBy(() -> f.get(TestDb.db(), Map.of("rt", "id", "age|between", 21)))
+                            .isInstanceOf(FilamentsError.class)
+                            .hasMessageContaining("需要 2 个值"),
+                    () -> assertThatThrownBy(() -> f.get(TestDb.db(), Map.of("rt", "id", "age|between", List.of(1, 2, 3))))
+                            .isInstanceOf(FilamentsError.class)
+                            .hasMessageContaining("需要 2 个值"));
+        }
+
+        @Test
+        void singleValueOperatorRejectsMultipleValues() {
+            seed(1);
+            assertThatThrownBy(() -> f.get(TestDb.db(),
+                    Map.of("rt", "id", "name|like", List.of("user-%", "%x"))))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("只接受 1 个值");
+        }
+
+        @Test
+        void nullCheckIgnoresWhateverValueIsBound() {
+            seed(2);
+            // 键上绑什么都不参与 SQL：传多个值也不报错
+            assertThat(f.get(TestDb.db(), Map.of("rt", "id", "name|isNull", List.of(1, 2)))).isEmpty();
         }
     }
 

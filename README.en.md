@@ -130,7 +130,12 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | p   | page number                      | 1       | ?p=3                        | `limit 20 offset 40`                                     |
 | pc  | page size                        | 20      | ?pc=18                      | `limit 18 offset 0`                                      |
 | od  | ordering (`-` = desc)            | null    | ?od=id,-height              | `order by id asc, height desc`                           |
-| pg  | compute total count (in `getByPages`) | 0       | ?pg=1                       | `count(*)` alongside `limit ? offset ?`                  |
+| pg  | compute total count (in `getByPages`) | 0       | ?pg=1                       | `count(*)` unpaged; `limit ? offset ?` only on the rows  |
+
+> `rt` / `p` / `pc` / `od` / `pg` describe *row* results, so they only apply to `get` / `getByPages` / `getByIds`.
+> `aggregation` consumes only the conditions (including `lg` / `raw`): its shape comes from `group` plus the
+> aggregate targets, so handing the same query map to both is safe — pagination cannot truncate the count,
+> and row projections cannot leak into GROUP BY.
 
 ### Field expressions
 
@@ -196,6 +201,28 @@ Operator tokens are exact and case-sensitive (camelCase, as listed). A last segm
 | ?name&#124;isNotNull=     | `where name is not null`                |
 
 > `isNull` / `isNotNull` take no parameter — whatever value is bound to the key (`=`, `=1`, `=anything`) is ignored, because the predicate has nothing to compare against. They compose with a func chain like every other operator (`extra.age|substr(1,2)|isNull`). Negation needs no extra operator: write `!(name|isNull)` in `lg`.
+
+### Value shapes
+
+Every value is bound through a placeholder, but *how many* values a single key carries is decided by the operator — the comma is only a separator where the operator is inherently multi-valued:
+
+| Operators | Values | How a String is read |
+| --- | --- | --- |
+| `in` / `notIn` / `intersect` | any number | split on `,` (`?id|in=1,2`) |
+| `between` / `notBetween` | exactly 2 | split on `,`; anything but two values throws |
+| `eq` / `ne` / `gt` / `ge` / `lt` / `le` / `like` / `notLike` | exactly 1 | **the whole string is one value**; a comma is just a character |
+| `isNull` / `isNotNull` | none | whatever is bound is ignored (and not counted) |
+
+- Single-value operators never split, so a comma inside a `like` pattern, a JSON text or a name just works — no escaping needed: `?name=John, Jr.`, `?profile={"a":1,"b":2}`, `?name|like=%,%`.
+- Binding several values to a single-value operator **throws** instead of silently keeping the first one (jOOQ quietly drops surplus bind values, which would mean wrong rows rather than an error). Several `like` patterns are composed with condition aliases + `lg`: `l1::name|like=a%`, `l2::name|like=%b`, `lg=(l1,l2)`.
+- When an individual element of a multi-valued operator contains a comma (a set of JSON texts, names with commas), pass a `List` / `Set` — containers are read element by element and inner commas are never split:
+
+```java
+var users = filaments.get(db, Map.of("name|in", List.of("John, Jr.", "user-2")));
+```
+
+- A bare string and a collection holding that one string are two different shapes: `"a,b"` means two values for `in`, while `List.of("a,b")` means one value that happens to contain a comma.
+- Shapes are resolved at **render time**; parsing never touches the value, so `values` inside `SelectSpec` / `LogicNode#toTreeString()` always holds exactly one element — the thing bound to the key itself.
 
 ### Naming and configuration
 

@@ -224,20 +224,49 @@ public class SelectSpecBuilder {
     }
 
     private void parsePagination(Map<String, Object> query, SelectSpec spec) {
-        if (query.containsKey("pc")) {
-            int pc = Integer.parseInt(query.get("pc").toString());
-            spec.setLimit(pc);
-            if (query.containsKey("p")) {
-                int p = Integer.parseInt(query.get("p").toString());
-                spec.setOffset((p - 1) * pc);
+        if (!query.containsKey("pc")) {
+            return;
+        }
+
+        var pc = positiveInt(query, "pc");
+        spec.setLimit(pc);
+        if (query.containsKey("p")) {
+            spec.setOffset((positiveInt(query, "p") - 1) * pc);
+        }
+    }
+
+    /**
+     * 分页参数取整数：非数字、非正数都指到「哪个键、传了什么」。
+     * <p>正数不是额外要求而是必需的：{@code pc=0} 或 {@code p=0} 会渲染成 {@code limit 0} /
+     * {@code offset -20} 这类合法但语义相反的 SQL，报错点跑到 DB 侧，看不出是参数问题。
+     */
+    private Integer positiveInt(Map<String, Object> query, String key) {
+        var raw = String.valueOf(query.get(key));
+
+        try {
+            var num = Integer.parseInt(raw);
+            if (num <= 0) {
+                throw new FilamentsError("分页参数 %s 必须是正整数，实际: %s".formatted(key, raw));
             }
+            return num;
+        } catch (NumberFormatException e) {
+            throw new FilamentsError("分页参数 %s 必须是整数，实际: %s".formatted(key, raw), e);
         }
     }
 
     // ==================== 条件解析方法 ====================
 
+    /**
+     * 条件键 -> {@link FieldCondition}。
+     *
+     * <p>执行流程：剥别名前缀 → 按 {@code nameSplitter} 拆 key → 首段作字段名、
+     * 末段命中操作符表则作操作符（否则按隐式 eq，整段留在函数链里）→ 中间段作函数链。
+     *
+     * <p>值原样收进 {@code values}，逗号不在这里拆：要不要拆由操作符在渲染期决定
+     * （{@code Filaments#buildConditionFromFieldCondition}，那里才知道 SQL 要几个占位符）。
+     */
     public FieldCondition buildFieldCondition(Map<String, Object> pickedQuery, String key) {
-        var value = buildValue(pickedQuery.get(key));
+        var rawValue = pickedQuery.get(key);
 
         // 剥掉 "别名::" 前缀，别名只做寻址，不进入字段/函数链解析
         int aliasIdx = key.indexOf(config.aliasSplitter);
@@ -250,7 +279,8 @@ public class SelectSpecBuilder {
 
         FieldCondition cond = new FieldCondition();
         cond.setField(fieldName);
-        cond.setValues(Arrays.asList(value));
+        // 唯一元素就是键上绑的那个东西本身（集合也不展开），否则分不清「含逗号的串」和「装一个串的集合」
+        cond.setValues(Arrays.asList(rawValue));
 
         String lastPart = leftParts.getLast();
         boolean isOperator = true;
@@ -290,6 +320,28 @@ public class SelectSpecBuilder {
     // ==================== 辅助方法 ====================
 
     /**
+     * {@code lg} 里 {@code ?N} 指向本层第 N 个子节点（N 由 {@link #parseLogic} 生成，但整段 str
+     * 由用户输入拼成，所以 N 不一定真是数字）。
+     * <p>非数字与越界都指到具体 token：否则 {@code (?}、{@code (?9)} 分别抛
+     * NumberFormatException、IndexOutOfBoundsException，看不出是逻辑表达式写坏了。
+     *
+     * @param token     以 {@code ?} 开头的序号 token
+     * @param childCount 本层已有的子节点个数
+     * @return 可直接用于 {@code children.get} 的序号
+     */
+    private Integer logicChildIndex(String token, Integer childCount) {
+        try {
+            var index = Integer.parseInt(token.substring(1));
+            if (index < 0 || index >= childCount) {
+                throw new FilamentsError("lg 表达式引用的子节点序号越界: %s（当前层共 %s 个）".formatted(token, childCount));
+            }
+            return index;
+        } catch (NumberFormatException e) {
+            throw new FilamentsError("lg 表达式的子节点序号不是整数: %s".formatted(token), e);
+        }
+    }
+
+    /**
      * 字符串内容为查询key的索引从0开始计算
      * @param input
      * @return
@@ -323,8 +375,8 @@ public class SelectSpecBuilder {
                 for (String key : current.str.split(",")) {
                     if (key.isEmpty()) continue;
                     if (key.startsWith("?")) {
-                        int index = Integer.parseInt(key.substring(1));
-                        current.value.add(current.children.get(index));
+                        current.value.add(current.children.get(
+                                logicChildIndex(key, current.children.size())));
 
                         for (LogicNode child : current.children) {
                             allChild.addAll(child.allChild);
@@ -362,6 +414,12 @@ public class SelectSpecBuilder {
                 .collect(Collectors.joining(" " + splitter + " "));
     }
 
+    /**
+     * 逗号展开：String 按逗号拆成多个元素，List/Set 原样，标量包一层。
+     *
+     * <p>只服务「一个聚合函数对应多列」这类字段清单展开（{@code Map.of("count", "id,type")}）；
+     * 条件值不经过这里——是否按逗号拆由操作符在渲染期决定，见 {@link #buildFieldCondition}。
+     */
     public Object[] buildValue(Object value) {
         switch (value) {
             case List<?> l -> {
