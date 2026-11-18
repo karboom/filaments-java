@@ -124,19 +124,9 @@ public abstract class Filaments<T> {
         // 构造期就绑好配置，子类直接用 specBuilder 字段也不会拿到 null
         this.specBuilder = new SelectSpecBuilder(config);
 
-        // 模型类型只能从「带类型实参的子类」上取。原来的裸强转是 unchecked 的，raw 写法（extends Filaments）
-        // 不会在这里抛，ClassCastException 要等到第一次用 dataClass 才炸，报错点和原因隔着一整个查询。
-        if (!(getClass().getGenericSuperclass() instanceof ParameterizedType superClass)) {
-            throw new FilamentsError("%s 必须以带模型类型的方式继承：class %s extends Filaments<YourModel>".formatted(
-                    getClass().getName(), getClass().getSimpleName()));
-        }
-
-        var typeArg = superClass.getActualTypeArguments()[0];
-        if (!(typeArg instanceof Class<?> modelClass)) {
-            throw new FilamentsError("Filaments 的类型实参必须是具体模型类，实际: %s".formatted(typeArg));
-        }
-
-        this.dataClass = (Class<T>) modelClass;
+        // 模型类型在构造期就定死：raw 写法（extends Filaments）在这里拒，
+        // 不留到第一次用 dataClass 才炸——那时报错点和原因已经隔着一整个查询。
+        this.dataClass = resolveModelClass();
 
         // 列名 -> 字段索引 + JSON 字段集：config 构造期定死，建一次即可
         var indexed = new HashMap<String, java.lang.reflect.Field>();
@@ -156,6 +146,47 @@ public abstract class Filaments<T> {
         }
         this.modelFields = Map.copyOf(indexed);
         this.jsonFields = Set.copyOf(json);
+    }
+
+    /**
+     * 沿父类链向上找 {@code Filaments<...>}，取它的实参作模型类型。链上的中间层只允许非泛型具体类。
+     * <p>泛型中间类（{@code BaseF<T> extends Filaments<T>}）明确不支持：它的类型实参和 Filaments
+     * 的形参之间没有可靠对应（位置可换、可以不转发，如 {@code Base2<A, B> extends Filaments<B>}），
+     * 猜错就是拿错模型类静默读写，比构造期报错难查得多。非泛型中间类（具体子类再派生、匿名子类）
+     * 模型类型仍然唯一确定，允许穿过。
+     * <p>执行流程：取 {@code getGenericSuperclass()}，剥出 raw 类型——是 Filaments 就校验实参为具体类
+     * 并返回；是带类型形参的其他类直接拒；否则把 raw 当作下一个 c 继续上溯。
+     *
+     * @return 全链路上唯一那处 {@code Filaments<Model>} 的模型类
+     */
+    @SuppressWarnings("unchecked")
+    private Class<T> resolveModelClass() {
+        // 显式声明为 Class<?>：getClass() 的静态类型是 Class<? extends Filaments<T>>，上溯时要往 c 里赋任意祖先类
+        var c = (Class<?>) getClass();
+        while (true) {
+            var sup = c.getGenericSuperclass();
+            if (sup == null) {
+                throw new FilamentsError("%s 的父类链上没有 Filaments<YourModel>".formatted(getClass().getName()));
+            }
+            var raw = sup instanceof ParameterizedType pt ? (Class<?>) pt.getRawType() : (Class<?>) sup;
+            if (raw == Filaments.class) {
+                if (!(sup instanceof ParameterizedType superClass)) {
+                    throw new FilamentsError("%s 必须以带模型类型的方式继承：extends Filaments<YourModel>".formatted(
+                            getClass().getName()));
+                }
+                var typeArg = superClass.getActualTypeArguments()[0];
+                if (!(typeArg instanceof Class<?> modelClass)) {
+                    throw new FilamentsError("Filaments 的类型实参必须是具体模型类：%s 实际是 %s".formatted(
+                            c.getName(), typeArg));
+                }
+                return (Class<T>) modelClass;
+            }
+            if (raw.getTypeParameters().length > 0) {
+                throw new FilamentsError("不支持泛型中间类：%s 继承了 %s；中间类请写成非泛型具体类，模型类型只写在 extends Filaments<YourModel> 一处".formatted(
+                        c.getName(), sup));
+            }
+            c = raw;
+        }
     }
 
     /**
