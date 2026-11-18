@@ -5,94 +5,38 @@
 </p>
 
 <p align="center">
-  <a href="https://central.sonatype.com/artifact/io.github.karboom/filaments-java">
-    <img src="https://img.shields.io/maven-central/v/io.github.karboom/filaments-java?label=Maven%20Central&logo=apachemaven&logoColor=white" alt="Maven Central">
-  </a>
-  <a href="https://javadoc.io/doc/io.github.karboom/filaments-java">
-    <img src="https://img.shields.io/badge/javadoc-available-blueviolet?logo=readthedocs&logoColor=white" alt="Javadoc">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache&logoColor=white" alt="Apache-2.0 License">
-  </a>
+  <a href="https://central.sonatype.com/artifact/io.github.karboom/filaments-java"><img src="https://img.shields.io/maven-central/v/io.github.karboom/filaments-java?label=Maven%20Central&logo=apachemaven&logoColor=white" alt="Maven Central"></a>
+  <a href="https://javadoc.io/doc/io.github.karboom/filaments-java"><img src="https://img.shields.io/badge/javadoc-available-blueviolet?logo=readthedocs&logoColor=white" alt="Javadoc"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache&logoColor=white" alt="Apache-2.0 License"></a>
   <img src="https://img.shields.io/badge/Java-22%2B-orange?logo=openjdk&logoColor=white" alt="Java 22+">
-  <a href="https://github.com/karboom/filaments-java">
-    <img src="https://img.shields.io/github/stars/karboom/filaments-java?style=flat&logo=github&label=Stars" alt="Stars">
-  </a>
-  <a href="https://github.com/karboom/filaments-java/compare">
-    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?logo=contribute&logoColor=white" alt="PRs Welcome">
-  </a>
+  <a href="https://github.com/karboom/filaments-java"><img src="https://img.shields.io/github/stars/karboom/filaments-java?style=flat&logo=github&label=Stars" alt="Stars"></a>
+  <a href="https://github.com/karboom/filaments-java/compare"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen?logo=contribute&logoColor=white" alt="PRs Welcome"></a>
 </p>
 
-一个轻量级的 Java ORM 库，提供了一组语法可以将查询字符串直接转换为 SQL 查询。它的接口是**为自然语言而生的**：查询条件就是「字段|函数|操作符=值」这样的短字符串，与人类描述需求的语序几乎一一对应，因此也非常适合作为 **AI / LLM 生成代码（vibe coding）的数据层目标库**。
+构建在 jOOQ 之上的轻量 ORM：查询条件是「字段|函数|操作符=值」这样的短字符串，与人类描述需求的语序同构——人好写，LLM 也好生成。
 
-## 特性
+## 为什么适合自然语言 / vibe coding
 
-- 🔄 将查询字符串自动转换为 SQL 查询
-- 🔍 支持丰富的查询操作符和函数
-- 🗣️ 自然语言友好：查询 DSL 即字符串，LLM 无需理解复杂 builder API 即可准确生成
-- 🤖 Vibe coding 适配：统一的方法签名 + 约定式字段映射，AI 一次对话即可完成数据访问层
-- 📦 易于集成到现有项目中
-- ⚡ 高性能的数据访问层
-- 🛠️ 灵活的扩展机制
-
-## 为什么对自然语言 / Vibe Coding 友好
-
-传统 ORM 让 LLM 写查询时，需要它精确记忆大量 builder API、类型和链接调用；任何一处拼错都会编译失败。Filaments 把查询收敛成**一种高度规律、可自然表达的字符串语法**：
-
-1. **需求到查询几乎零翻译成本**
-   "查询年龄大于 18 的北京用户，按注册时间倒序" 直接映射为：
-
-   ```java
-   filaments.getByPages(db, new HashMap<>() {{
-       put("age|gt", 18);
-       put("city", "北京");
-       put("od", "-create_time");
-   }});
-   ```
-
-   `字段|操作符=值` 与中文/英文的描述语序同构（字段→条件→值），LLM 最容易学会的就是这种模式化短字符串，出错率显著低于链式 API。
-
-2. **参数是纯数据（Map / String），不是代码**
-   查询条件可以由 LLM 以 JSON 形式输出再直接传入，天然适合 Function Calling / Tool 参数场景，也便于服务端做校验与回放。复杂逻辑树用 `lg` 表达式（如 `!(a=1,b=2)`）描述，且提供 `toTreeString()` 树形打印，AI 生成后可视化自检。
-
-3. **强约定，弱配置**
-   驼峰字段自动转下划线列名、JSON 列自动序列化、`p/pc/pg` 分页、`rt` 指定返回字段——LLM 不需要生成任何映射配置或样板代码，命名约定本身即是"提示词"。
-
-4. **接口面极小，一次对话即可上手**
-   核心入口只有 `create / updateByIds / deleteByIds / get / getByPages / getByIds / aggregation` 几个方法，第一个参数统一是 `DSLContext`。AI 只需少量示例（few-shot）即可覆盖整个库的用法，生成的代码风格高度一致、可预测。
-
-5. **安全边界清晰**
-   所有值走占位符绑定；字段名/排序键/聚合分组经标识符白名单校验，函数链仅允许 `FilamentsConfig.sqlFuncList` 白名单函数且参数限数字字面量，JSON 路径段逐段校验并转义。非法输入直接抛错而非拼入 SQL，LLM 生成的查询不会引入拼接式 SQL 注入风险，适合作为"让 AI 直接操作数据查询"的落地层。
+- **零翻译成本**："年龄大于 18 的北京用户，按注册时间倒序" 就是 `age|gt=18`、`city=北京`、`od=-create_time`；`字段→操作符→值` 与中英文语序同构，比链式 builder API 出错率低得多。
+- **参数是数据不是代码**：条件以 `Map` / JSON 传入，天然适配 Function Calling，也便于服务端校验与回放；复杂逻辑用 `lg` 表达式（`!(a,b)`），`LogicNode#toTreeString()` 打印出来即可自检。
+- **接口小、约定强**：入口只有 `create / updateByIds / deleteByIds / get / getByPages / getByIds / aggregation`，第一参数统一 `DSLContext`；驼峰自动转下划线、JSON 列自动序列化、`p/pc/pg` 分页，不需要映射配置与样板代码。
+- **安全边界清晰**：值全走占位符绑定；字段名/排序键/分组字段逐段过标识符白名单，函数只认 `FilamentsConfig.sqlFuncList` 且参数限数字字面量；非法输入抛错而不是拼进 SQL。
 
 ## 快速开始
 
-### 安装
-
-确保你的项目使用 Gradle 或 Maven 构建，然后添加依赖：
-
-#### Gradle
-
 ```gradle
-dependencies {
-    implementation 'io.github.karboom:filaments-java:2.1.0'
-}
+implementation 'io.github.karboom:filaments-java:2.1.0'
 ```
-
-#### Maven
 
 ```xml
-<dependency>
-    <groupId>io.github.karboom</groupId>
-    <artifactId>filaments-java</artifactId>
-    <version>2.1.0</version>
-</dependency>
+<dependency><groupId>io.github.karboom</groupId><artifactId>filaments-java</artifactId><version>2.1.0</version></dependency>
 ```
 
-### 基本用法
+Java 22+，PostgreSQL。
 
 ```java
-// 一个实例对应一张表：Filaments 是抽象类，模型类型取自匿名子类的泛型参数，
-// 且必须实现唯一抽象方法 initValidator（yavi 校验器入口，无校验需求时返回空 builder 即可）
+// 一个实例对应一张表：Filaments 是抽象类，模型类型取自 extends Filaments<User> 的泛型实参；
+// initValidator 是唯一抽象方法（yavi 校验入口，无校验需求时返回空 builder）
 var userFilament = new Filaments<User>("user") {
     @Override
     public ValidatorBuilder<User> initValidator() {
@@ -100,12 +44,11 @@ var userFilament = new Filaments<User>("user") {
     }
 };
 
-// 使用查询字符串进行查询
 var users = userFilament.get(db, new HashMap<>() {{
     put("age|in", List.of(22, 23));
 }});
 
-// 分页查询：返回 PageResult（list + total）；total 仅在传入 pg 时计算
+// 分页：返回 PageResult（list + total），total 仅在传入 pg 时计算
 var page = userFilament.getByPages(db, new HashMap<>() {{
     put("name", "x");
     put("pg", 1);
@@ -121,26 +64,22 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | rt       | 指定返回字段（仅列名，不支持 jsonb 路径/下标） | *      | ?rt=name,age | ```select `name`, `age` ```             |
 | p        | 指定当前页码                     | 1      | ?p=3         | ```limit 20 offset 40```                |
 | pc       | 指定页内行数                     | 20     | ?pc=18       | ```limit 18 offset 0```                 |
-| od       | 指定排序规则                     | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
+| od       | 指定排序规则（`-` 为降序）        | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
 | pg       | 是否需要计算分页(仅 getByPages 生效) | 0      | ?pg=1        | ``` count(*) 不带 limit/offset，行结果才分页 ``` |
 
-> `rt` / `p` / `pc` / `od` / `pg` 只描述"行结果"，因此只对 `get` / `getByPages` / `getByIds` 生效；
-> `aggregation` 只取其中的条件（含 `lg` / `raw`），结果形态由 `group` 与聚合目标决定，
-> 同一份 query 直接喂给两者是安全的（分页不会截断 count，投影不会混进 GROUP BY）。
+> 这五个键只描述"行结果"，因此只对 `get` / `getByPages` / `getByIds` 生效；`aggregation` 只取其中的条件（含 `lg` / `raw`），同一份 query 直接喂给两者是安全的（分页不会截断 count，投影不会混进 GROUP BY）。
+>
+> `rt` 每段只当列名（不校验、不认 jsonb 路径与函数链）：库里没有的列由数据库报错，模型没声明的列静默跳过。
 
 ### 字段表达式
-
-#### 格式
 
 ```
 字段名|函数(参数)...|操作符=数值
 ```
 
-> 约束：字段名须为合法标识符（点分路径如 `data.type` 逐段校验）；函数必须命中白名单 `FilamentsConfig.sqlFuncList`（默认内置 PG 常用函数集 `FilamentsConfig.PG_FUNCS`，另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS` 预设可整体替换或自行增删），参数仅支持数字字面量；违反即抛错。
-
-> 命名约定：条件键、`rt`、`od`、分组字段、主键 `pk` 一律按「驼峰 → 小写下划线」归一化（`wechatId` → `wechat_id`，连续大写同样降格：`userID` → `user_id`），因此写驼峰或写库里的下划线名都指向同一列。点分 jsonb 路径的**段 0 按列名规则**归一化，其后的路径段按 JSON 键规则归一化，所以 `extra.totalCount` 与 `extra.total_count` 命中同一个键。数组下标两种写法等价：`data[0].type` 与 `data.0.type` 都指向第一个元素（方括号内只接受纯整数，其余一律抛错）。两套规则都可配置，见[命名与配置](#命名与配置)。
-
-#### 示例
+- 字段名须为合法标识符（点分路径如 `data.type` 逐段校验）；函数须命中白名单 `FilamentsConfig.sqlFuncList`（默认 `PG_FUNCS`，另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS`），参数仅支持数字字面量；违反即抛错。
+- `|` 是**同一个键内**的分段符，不是"或"：`name|lower|like` 是一个条件 `lower(name) like ?`，只有末段命中操作符表时才是操作符，其余段都是函数链。OR / AND / 取反一律走 `lg`（`(a,b)`、`!(a,b)`）。
+- 名字一律经 `config.naming` 归一化（默认驼峰 → 小写下划线，`userID` → `user_id`），写驼峰或写库里的下划线名都指向同一列。点分路径的**段 0 按列名规则**、其后按 JSON 键规则，故 `extra.totalCount` 与 `extra.total_count` 命中同一个键；数组下标 `data[0].type` 与 `data.0.type` 等价（括号内只接受纯整数）。详见[命名与配置](#命名与配置)。
 
 | 查询字符串                                        | 对应SQL                                                     |
 | ------------------------------------------------- | ----------------------------------------------------------- |
@@ -151,17 +90,14 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | ?data.type=dog                                    | ``` where `data` #>> '{type}' = 'dog' ```                   |
 | ?data[0].type=cat                                 | ``` where `data` #>> '{0,type}' = 'cat' ```                 |
 | ?data[0]=dog                                      | ``` where `data` #>> '{0}' = 'dog' ```                      |
-| ?data.0.type=cat                                  | 同上（下标两种写法归一化为同一形态）                          |
 
 #### 条件别名
 
-`lg` 表达式里 `(` `)` `!` `,` `=` 全是保留字符，而函数链键（如 `extra.age|substr(1,2)|ge`）本身含括号和逗号；同时 Map 的键必须唯一，同一表达式需要出现两次（不同值或不同操作符）时会互相覆盖。
-
-因此条件键可以加别名前缀：`别名::字段|函数链|操作符`，`lg` 里只写短别名，值仍留在参数中。
+`lg` 表达式里 `(` `)` `!` `,` `=` 全是保留字符，而函数链键（`extra.age|substr(1,2)|ge`）自带括号和逗号；同时 Map 的键必须唯一，同一表达式需要出现两次（不同值或不同操作符）时会互相覆盖。因此条件键可加前缀 `别名::字段|函数链|操作符`，`lg` 里只写短别名，值仍留在参数中：
 
 ```java
 var users = filaments.get(db, new HashMap<>() {{
-    put("lowAge::extra.age|substr(1,2)|ge", "5");   // substr(extra->>'$.age', 1, 2) >= 5
+    put("lowAge::extra.age|substr(1,2)|ge", "5");   // substr(extra #>> '{age}', 1, 2) >= 5
     put("highAge::extra.age|substr(3,4)|le", "10"); // 同字段不同函数链
     put("dup1::name|lower", "ann");                 // 同一表达式出现两次（隐式 EQ）
     put("dup2::name|lower", "bob");
@@ -169,11 +105,11 @@ var users = filaments.get(db, new HashMap<>() {{
 }});
 ```
 
-> 约束：`lg` 表达式整体必须由一对括号包裹；别名须为合法标识符（字母/下划线开头，仅字母数字下划线）且不得重复；引用不存在或非法的别名会抛错。别名只用于参数寻址，永不参与 SQL 拼接。
+> `lg` 整体须由一对括号包裹；别名须为合法标识符且不得重复，引用不存在的别名抛错。别名只用于参数寻址，永不参与 SQL 拼接。
 
 ### 操作符
 
-操作符 token 精确匹配且区分大小写（就是下表里的驼峰写法）。末段不在表中时按「隐式 `eq` + 函数链末段」处理，因此拼错的操作符会被函数白名单拒掉，而不是静默改变语义。
+操作符 token 精确匹配且区分大小写；末段不在表中时按「隐式 `eq` + 函数链末段」处理，所以拼错的操作符会被函数白名单拒掉，而不是静默改变语义。
 
 | 查询字符串                | 对应SQL                                              |
 | ------------------------- | ---------------------------------------------------- |
@@ -192,45 +128,31 @@ var users = filaments.get(db, new HashMap<>() {{
 | ?name&#124;isNull=        | ```  where `name` is null ```                        |
 | ?name&#124;isNotNull=     | ```  where `name` is not null ```                    |
 
-> `isNull` / `isNotNull` 不取参数：键上绑的值（留空、`=1`、`=任意`）一律忽略，因为谓词没有比较对象。它们同样可以接在函数链后面（`extra.age|substr(1,2)|isNull`）。取反不需要额外操作符，`lg` 里写 `!(name|isNull)` 即可。
+> `isNull` / `isNotNull` 不取参数（键上绑什么都忽略，谓词没有比较对象），也可接在函数链后（`extra.age|substr(1,2)|isNull`）；取反不需要额外操作符，`lg` 里写 `!(name|isNull)`。
 
 ### 值的形态
 
-值全部走占位符绑定，但「一个键上绑几个值」由操作符决定——逗号只在天生多值的地方才是分隔符：
+值全部走占位符绑定，永不进 SQL 文本；「一个键上绑几个值」由操作符决定——逗号只在天生多值的地方才是分隔符：
 
 | 操作符 | 值个数 | String 怎么解释 |
 | --- | --- | --- |
-| `in` / `notIn` / `intersect` | 不限 | 按 `,` 拆成多个值（`?id|in=1,2`） |
+| `in` / `notIn` / `intersect` | 不限 | 按 `,` 拆成多个值（`?id&#124;in=1,2`） |
 | `between` / `notBetween` | 恰好 2 | 按 `,` 拆；拆出来不是两个就抛错 |
 | `eq` / `ne` / `gt` / `ge` / `lt` / `le` / `like` / `notLike` | 恰好 1 | **整串作一个值**，逗号只是普通字符 |
 | `isNull` / `isNotNull` | 不取值 | 键上绑什么都忽略（也不计数） |
 
-- 单值操作符不拆逗号，所以含逗号的 like 模式、JSON 文本、名字里的逗号直接写就行，无需任何转义：`?name=张,三`、`?profile={"a":1,"b":2}`、`?name|like=%,%`。
-- 反过来，往单值操作符上绑多个值会**抛错**，而不是静默只取第一个（jOOQ 对多余绑定值是悄悄丢弃的，不抛就是查错数据）。多模式 `like` 请用条件别名 + `lg` 组合：`l1::name|like=a%`、`l2::name|like=%b`、`lg=(l1,l2)`。
-- 多值操作符里**某个元素本身含逗号**（一组 JSON 文本、含逗号的名字）时传 `List` / `Set`——容器是逐元素取值的，元素内部的逗号不再被拆：
-
-```java
-var users = filaments.get(db, Map.of("name|in", List.of("张,三", "user-2")));
-```
-
-- 「一个字符串」和「装了单个字符串的集合」是两种形态：`"a,b"` 给 `in` 是两个值，`List.of("a,b")` 给 `in` 是一个值（内容含逗号）。
-- 拆不拆、要几个都在**渲染期**决定，解析期一个元素都不动——`SelectSpec` / `LogicNode#toTreeString()` 里 `values` 永远只有一个元素，就是键上绑的那个东西本身。
+- 单值操作符不拆逗号，含逗号的 like 模式、JSON 文本、名字直接写就行，无需转义：`?name=张,三`、`?profile={"a":1,"b":2}`。往单值操作符上绑多个值会**抛错**，不会静默只取第一个（jOOQ 对多余绑定值是悄悄丢弃的）。多模式 `like` 请用别名 + `lg`：`l1::name|like=a%`、`l2::name|like=%b`、`lg=(l1,l2)`。
+- 多值操作符里某个元素本身含逗号时传 `List` / `Set`（逐元素取值，内部逗号不拆）：`Map.of("name|in", List.of("张,三", "user-2"))`。`"a,b"` 是两个值，`List.of("a,b")` 是一个含逗号的值。
+- 拆不拆、要几个都在**渲染期**决定，解析期一个元素都不动——`SelectSpec` / `toTreeString()` 里 `values` 永远只有一个元素，就是键上绑的那个东西本身。
 
 ### 命名与配置
 
-所有可调项都在 `FilamentsConfig` 上（旧的 `Filaments` 静态兼容字段已全部移除）。
-
-模型字段名到「数据库列名」和「JSON 键名」的转换由**同一个命名函数**控制（一个系统内风格统一）。规则本身就是函数——库提供 `snake` / `camel` / `lower` / `asIs` 四个备选实现，可整体替换，也可组合出自定义规则：
+所有可调项都在 `FilamentsConfig` 上（普通对象：多实例传同一个即等效"全局配置"，不传则各持一份内置默认）。列名与 jsonb 路径段由**同一个命名函数** `naming` 控制，可整体换成 `snake` / `camel` / `lower` / `asIs`，也可组合出自定义规则：
 
 ```java
-// FilamentsConfig.snake / camel / lower / asIs   （asIs = 声明什么用什么）
-
-// 配置是普通对象：自己 new 一份传给各实例；多实例传同一个对象即等效"全局配置"
-// （库不再提供 FilamentsConfig.defaults 静态实例；不传 config 的实例各持一份内置默认）
 var config = new FilamentsConfig();
 config.naming = FilamentsConfig::camel;
-// 自定义组合示例：统一加表前缀
-// config.naming = s -> "t_" + FilamentsConfig.snake(s);
+// config.naming = s -> "t_" + FilamentsConfig.snake(s);   // 自定义：统一加表前缀
 
 var filament = new Filaments<User>("filaments_camel", config) {
     @Override
@@ -245,42 +167,89 @@ var filament = new Filaments<User>("filaments_camel", config) {
 | `asIs` | `wechatId` | `userID` | `wechat_id` | 不改写 |
 | `lower` | `wechatid` | `userid` | `wechat_id` | 全小写 |
 
-- `naming` 作用于：条件键、`rt`、`od`、分组字段、主键 `pk`、`create`/`update` 的列名、聚合别名，以及 jsonb 查询路径段（`extra.xxx` 的 `xxx`）。
-- 聚合别名由列名派生：`count(wechatId)` → `countWechatId`，`countDistinct(id)` → `countDistinctId`。
-- 换 `naming` 不会迁移存量 jsonb / 列名数据；旧数据请用实例级配置或一次性刷数据。
-- 序列化只认 `config.mapper` 这一个实例（默认内置 SNAKE 风格）。库不提供 mapper 工厂：换风格自己 `JsonMapper.builder().propertyNamingStrategy(...).disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE).build()`——disable 别丢，否则带 offset 的时间会被静默调到本地时区；并与 `naming` 配对（默认同为 snake，天然一致）。
-
-其余可调项（都在同一个 config 对象上，按需共享或各建各的）：
-
 | 配置项 | 默认值 | 作用 |
 | --- | --- | --- |
-| `nameSplitter` | `"\|"` | 查询语法里 `字段\|函数\|操作符` 的分隔符 |
-| `aliasSplitter` | `"::"` | 条件别名寻址分隔符（`别名::字段\|函数\|操作符`），永不进 SQL |
-| `sqlFuncList` | `PG_FUNCS`（另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS`） | 函数链与聚合函数白名单，可整体换预设或增删。操作符 token 是固定集合（见上方操作符表），不可配置 |
+| `naming` | `snake` | 作用于条件键、`rt`、`od`、分组字段、主键 `pk`、写侧列名、聚合别名与 jsonb 路径段；不迁移存量数据 |
+| `mapper` | `DEFAULT_MAPPER` | 所有 JSON 读写共用的唯一 Jackson mapper，须与 `naming` 配对 |
+| `nameSplitter` | `"\|"` | 查询语法里 `字段\|函数\|操作符` 的分隔符（勿用 `.`，与 jsonb 路径冲突） |
+| `aliasSplitter` | `"::"` | 条件别名寻址分隔符，永不进 SQL |
+| `sqlFuncList` | `PG_FUNCS` | 函数链与聚合函数白名单，可整体换预设或增删；操作符 token 是固定集合，不可配置 |
 | `page` / `pageSize` | 1 / 20 | `getByPages()` 未传 `p` / `pc` 时的默认分页 |
+
+- 聚合别名由列名派生：`count(wechatId)` → `countWechatId`，`countDistinct(id)` → `countDistinctId`。
+- 自配 `mapper` 时务必保留 `disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)`，否则带 offset 的时间会被静默调到本地时区：`JsonMapper.builder().propertyNamingStrategy(...).disable(...).build()`。
 
 ### 类型与 JSON 约定
 
-值不靠手工 setter/getter 映射：构造期把模型字段分类后，写侧 JSON 字段序列化成 JSON 文本、其余原样绑定；读侧（doQuery）按列直接映射进对象——不再有"整行转 JSON 再解析"的往返，只有 JSON 字段的值会过一遍 Jackson。模型字段禁止声明为 `Object`（构造期抛错）：jsonb 请用 `Map<String,Object>` 或具体 POJO。JSON 键名的风格由 [`naming`](#命名与配置)（路径段）与 `config.mapper`（序列化）配对决定（默认同为 snake）。
+> 仅支持 PostgreSQL：点分 jsonb 路径渲染成 `col #>> '{path}'`，`intersect` 渲染成 `jsonb_path_exists(...)`，换函数白名单预设不会让这两条通道变得可移植。连接串须带 **`stringtype=unspecified`**（如 `jdbc:postgresql://host:5432/db?stringtype=unspecified`）：JSON 字段以 JSON 文本绑定，缺了它驱动按 VARCHAR 传参，PG 会拒 `jsonb 列 = varchar 表达式`。
+
+构造期按声明类型把字段分成 JSON / 非 JSON 两类：写侧 JSON 字段序列化成 JSON 文本、其余原样绑定；读侧（`doQuery`）按列直接映射进对象，没有"整行转 JSON 再解析"的往返。模型字段禁止声明为 `Object`（构造期抛错）：jsonb 请用 `Map<String,Object>` 或具体 POJO。字段只扫模型类**自身**的 `getDeclaredFields()`，**不含父类字段**——继承来的字段既不写库也不读回（静默丢弃），公共字段请用组合或在模型类里显式声明。
 
 | 模型字段类型 | 写入 | 读取 |
 | --- | --- | --- |
 | `String` / 数字 / `BigDecimal` / `java.time.*` / `boolean` / `byte[]` / `UUID` | 原样绑定（不套 JSON） | 列级映射：可赋值直取，否则 Jackson/jOOQ 单值转换；时间列走 jOOQ 转换器 |
-| `java.util.Date` / `java.sql.*` 声明的时间字段 | 原样绑定 | 读取时响亮报错（timestamptz 的 offset 语义无法无损落到这些类型，请改用 `java.time`） |
+| `java.util.Date` / `java.sql.*` 时间字段 | 原样绑定 | 读取时响亮报错（timestamptz 的 offset 语义无法无损落到这些类型，请改用 `java.time`） |
 | 枚举 | 存 `name()`（如 `A`） | `A` → 枚举 |
-| `List` / `Set` / `Map` / 嵌套对象 | 序列化成 JSON 文本写入（构造期判定，不看运行时值） | 投影带 JSONB 类型/元数据，直接得到对象/数组节点 |
+| `List` / `Set` / `Map` / 嵌套对象 | 序列化成 JSON 文本（按声明类型判定，不看运行时值） | 投影带 JSONB 类型/元数据，直接得到对象/数组节点 |
 
-> JSON 与否完全由构造期的字段分类决定：`rt` 投影会据此补 `JSONB` 类型，读取直接拿到对象/数组节点，不再做字符串嗅探；文本列里恰好以 `{`、`[` 开头的值（如 `{"a":1}`）始终原样读出，不会让整个查询失败。
+> JSON 与否完全由构造期分类决定，不做字符串嗅探：文本列里恰好以 `{`、`[` 开头的值始终原样读出。
+>
+> 库里已有的驼峰键 jsonb 在默认 `SNAKE` 下会被静默忽略（读成 null）：给该表配一个 `naming = FilamentsConfig::asIs`（或 `::camel`）的实例即可对上（命名同时改变列名解析，仅适用于整库同风格的表）。`@JsonProperty("originalKey")` 显式命名的键不受策略影响。
 
-> 库里已有的驼峰键 jsonb（别的系统写的）在默认 `SNAKE` 下会被静默忽略（读成 null）：给该表配一个 `naming = FilamentsConfig::asIs`（或 `::camel`）的实例即可对上——注意命名已合并，列名解析会一并改变，仅适用于整库同风格的表。显式 `@JsonProperty("originalKey")` 命名的字段不受命名策略影响（Jackson 3 语义）。
+## 校验与空值
 
-## 高级用法
+`create`（逐行建校验器）与 `updateByIds`（一次）在写库前执行 `initValidator()`，任一条不过即抛 `FilamentsError`（yavi 第一条违规文案）；约束名与模型字段名对不上抛 `模型 X 没有字段 y`。批量先全量校验再一次性 `execute`，任一行不过则整批不写。传入的 builder 可跨实例／跨行共享，库不会改动它。
 
-### 子查询
+**根字段为 `null` 时，该字段所在的整条约束跳过**——这是部分更新（null = 不改写）与嵌套路径约束（父对象可能整个缺失）能工作的前提，代价是 `null` 无法表达"必填"：
 
-`get` 没有 `sub` 重载；子查询有两个真实入口：
+| 数据形态 | 是否校验 |
+| --- | --- |
+| `name = null`，约束 `notBlank` | 跳过（不报错） |
+| `name = ""`，约束 `notBlank` | 抛 `FilamentsError` |
+| 约束 `address.city`，`address = null` | 跳过（父对象缺失） |
+| 约束 `address.city`，`address != null`、`city = null` | 抛 `FilamentsError` |
+| `updateByIds(ids, patch)` | 同上；`patch` 里为 null 的字段不进 SET，必填字段无法经 update 置空 |
 
-1. `aggregation` 自带 `sub` 参数（传 `null` 即普通表）：
+### 必填交给数据库
+
+列上加 `NOT NULL`：null 字段渲染成 `insert … values (default, …)` 由 PG 拒绝，一条 INSERT 是原子的（批量中某条违例则 0 行写入）。三个漏网处：
+
+| 情况 | 结果 | 对策 |
+| --- | --- | --- |
+| 列是 `NOT NULL DEFAULT 'A'` | null 被默认值吃掉，看不出调用方没传 | 要求显式给值就别设默认值，或在 `before` 钩子里自查 |
+| 空串 `''` | `NOT NULL` 不拦 | 用 yavi 的 `notBlank`（值非 null，约束会生效） |
+| jsonb 内部键（如 `address.city` 必填） | DB 只看整列是否为 null | 在 `before` 钩子里补 |
+
+> 约束冲突抛的是 jOOQ 的 `IntegrityConstraintViolationException`（含表名、列名与 SQL 原文），不是 `FilamentsError`；需要统一错误出口、或不想把物理表结构透给上层（异常文本会回喂给 LLM）时，在 service 层捕获。
+
+## 扩展用法
+
+需要子查询或原生 SQL 时，继承 `Filaments` 自建入口：
+
+```java
+public class UserFilaments extends Filaments<User> {
+    public UserFilaments() {
+        super("user");
+    }
+
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+
+    // 带子查询的行查询：用 protected 的 buildSelect + doQuery 自由组合（get 没有 sub 重载）
+    public List<User> getWithSub(DSLContext db, Map<String, Object> query, SelectQuery<Record> sub) {
+        return doQuery(buildSelect(db, query, sub), false);
+    }
+
+    // 需要时随时落回原生 jOOQ
+    public List<Record> getByOrgId(DSLContext db, Long orgId) {
+        return db.select().from(table("user")).where(field("org_id").eq(orgId)).fetch();
+    }
+}
+```
+
+`aggregation` 自带 `sub` 参数（传 `null` 即普通表）：
 
 ```java
 var stat = userFilament.aggregation(db,
@@ -290,64 +259,14 @@ var stat = userFilament.aggregation(db,
         buildMySubQuery(db));       // 子查询
 ```
 
-2. 其他查询在子类里走 protected 的 `buildSelect` + `doQuery` 自建入口：
-
-```java
-public class UserFilaments extends Filaments<User> {
-    public UserFilaments() {
-        super("user");
-    }
-
-    @Override
-    public ValidatorBuilder<User> initValidator() {
-        return new ValidatorBuilder<>();
-    }
-
-    public List<User> getWithSub(DSLContext db, Map<String, Object> query, SelectQuery<Record> sub) {
-        return doQuery(buildSelect(db, query, sub), false);
-    }
-}
-```
-
-### 自定义扩展
-
-继承 `Filaments` 类（构造器第一参数是表名；模型类型取自 `extends` 的泛型参数），扩展自定义方法：
-
-```java
-public class UserFilaments extends Filaments<User> {
-    public UserFilaments() {
-        super("user");
-    }
-
-    @Override
-    public ValidatorBuilder<User> initValidator() {
-        return new ValidatorBuilder<>();
-    }
-
-    public List<Record> getByOrgId(DSLContext db, Long orgId) {
-        // 需要时随时落回原生 jOOQ
-        return db.select().from(table("user")).where(field("org_id").eq(orgId)).fetch();
-    }
-}
-```
+> 模型类型取自父类链上唯一那处 `extends Filaments<模型类>` 的泛型实参：从具体子类再派生、用匿名子类都可以，但链上的中间基类必须是非泛型具体类（`BaseF<T> extends Filaments<T>` 这类泛型中间层在构造期拒绝）。
 
 ## 常见问题
 
-### 如何支持更复杂的 SQL
+- **要跑更复杂的 SQL？** 在数据库里建视图；用 `aggregation` 的 `sub`；或在子类里自建方法直接用注入的 `DSLContext`（见[扩展用法](#扩展用法)）。
+- **字段传 null 为什么没触发必填校验？** 见[校验与空值](#校验与空值)：根字段为 null 时约束整条跳过，必填请用列上的 `NOT NULL`。
+- **第一个参数为什么都是 `DSLContext`？** 便于按业务选择连接（主库／从库）与事务上下文。
 
-1. 在数据库中编写视图
-2. 通过 `aggregation` 的 `sub` 参数传入构造的子查询（或在子类里用 `buildSelect` 自建带子查询的入口）
-3. 继承 `Filaments` 类，扩展自定义方法，直接使用注入的 `DSLContext` 编写原生语句
+## 贡献与许可
 
-### 为什么第一个参数都是 DSLContext
-
-1. 根据业务需求灵活选择数据库连接（主库或从库）
-2. 灵活选择事务上下文
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## License
-
-Licensed under the [Apache License, Version 2.0](LICENSE).
+欢迎提交 Issue 和 Pull Request。Licensed under the [Apache License, Version 2.0](LICENSE).
