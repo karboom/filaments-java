@@ -537,6 +537,23 @@ class FilamentsTest {
                     .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("不支持的聚合函数");
         }
+
+        // target/group 正交组合：皆空必须拒绝（否则 buildBase 兜底成 select * 全表扫描）；
+        // 仅 group 非空是合法的有界分组查询
+        @Test
+        void emptyTargetAndGroupRejected() {
+            seed(5);
+            assertThatThrownBy(() -> f.aggregation(TestDb.db(), Map.of(), Map.of(), List.of(), null))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("聚合查询缺少目标");
+        }
+
+        @Test
+        void groupOnlyIsValid() {
+            seed(5);
+            var res = f.aggregation(TestDb.db(), Map.of(), Map.of(), List.of("type"), null);
+            assertThat(res).hasSize(1);
+        }
     }
 
     // endregion

@@ -706,7 +706,7 @@ public abstract class Filaments<T> {
 
     /**
      * 列级直接映射（无行级 JSON 往返），挂在 fetch(RecordMapper) 上单趟完成：
-     * 逐行 Record -> T，不攒整批 Result<Record>。
+     * 逐行 Record -> T，不攒整批 {@code Result<Record>}。
      * 列清单取首行的结果集元数据（{@code record.fields()}），不取 {@code q.getSelect()}——
      * 后者只登记显式 Field，默认投影 {@code SELECT *} 在那里是空的，据此建策略会得到零列空壳对象。
      * 每列按能力阶梯取值：
@@ -913,6 +913,13 @@ public abstract class Filaments<T> {
      * 需要给分组结果翻页的，自己用 sub 包一层再聚合。
      */
     protected SelectQuery<Record> buildAggregation(DSLContext db, Map<String, Object> target, Map<String, Object> query, List<String> group, SelectQuery sub) {
+        // 无 target 且无 group 时聚合没有任何投影语义，buildBase 会兜底成 select *，
+        // 对 LLM 生成的调用（漏传/拼错 target）等于放开一条无上限的全表整行扫描，直接拒绝。
+        // group 非空时 select group_cols ... group by ... 行数有界（不超 distinct 组数），属合法查询，保留。
+        if (target.isEmpty() && group.isEmpty()) {
+            throw new FilamentsError("聚合查询缺少目标：target 与 group 不能同时为空，疑似漏传聚合函数");
+        }
+
         var base = buildBase(db, query, specBuilder.parse(query), sub);
 
         for (var f: group) {

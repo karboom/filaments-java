@@ -128,6 +128,17 @@ tasks.check {
     dependsOn(tasks.jacocoTestCoverageVerification)
 }
 
+// doclint 关掉 missing 组：Lombok delombok 出来的 getter/setter 天然没有 @param/@return，
+// 这类告警不可根除也不该阻塞发布。html/reference/syntax 保留——注释里的裸泛型（如 <Record>）
+// 会被当 HTML 标记解析，直接 error，是 javadoc jar 产出的真实障碍。
+tasks.javadoc {
+    options {
+        this as StandardJavadocDocletOptions
+        addBooleanOption("Xdoclint:html,reference,syntax", true)
+        encoding = "UTF-8"
+    }
+}
+
 checkstyle {
     toolVersion = "14.4.0"
     configDirectory = file("config/checkstyle")
