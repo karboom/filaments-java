@@ -148,12 +148,11 @@ Every value is placeholder-bound and never reaches the SQL text; *how many* valu
 
 ### Naming and configuration
 
-Everything tunable lives on `FilamentsConfig`, a plain object: pass the same instance to several Filaments for application-wide settings, or build none and each instance starts from built-in defaults. Column names and jsonb path segments share **one naming function** — swap it wholesale for `snake` / `camel` / `lower` / `asIs`, or compose your own:
+Everything tunable lives on `FilamentsConfig`, an **immutable object**: change one item with `withXxx` to get a new copy; pass the same instance to several Filaments for application-wide settings, or build none and each instance starts from built-in defaults. Immutability is required, not stylistic: `naming` is materialized into the column index and JSON field set at construction *and* applied live while rendering SQL, so mutating it in place splits one instance across two sets of names and writes wrong data. To reconfigure a built instance, build a new one with a new config. Column names and jsonb path segments share **one naming function** — swap it wholesale for `snake` / `camel` / `lower` / `asIs`, or compose your own:
 
 ```java
-var config = new FilamentsConfig();
-config.naming = FilamentsConfig::camel;
-// config.naming = s -> "t_" + FilamentsConfig.snake(s);   // custom rule: uniform table prefix
+var config = new FilamentsConfig().withNaming(FilamentsConfig::camel);
+// new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s))   // custom rule: uniform table prefix
 
 var filament = new Filaments<User>("filaments_camel", config) {
     @Override
@@ -174,7 +173,7 @@ var filament = new Filaments<User>("filaments_camel", config) {
 | `mapper` | `DEFAULT_MAPPER` | the single Jackson mapper used for all JSON read/write; must be paired with `naming` |
 | `nameSplitter` | `"\|"` | separator of `field\|function\|operator` in query keys (don't use `.` — it collides with jsonb paths) |
 | `aliasSplitter` | `"::"` | condition-alias separator, never reaches SQL |
-| `sqlFuncList` | `PG_FUNCS` (also `MYSQL_FUNCS` / `SQLSERVER_FUNCS`) | function-chain and aggregate whitelist; operator tokens are a fixed set and are not configurable |
+| `sqlFuncList` | `PG_FUNCS` (also `MYSQL_FUNCS` / `SQLSERVER_FUNCS`) | function-chain and aggregate whitelist, replaced wholesale via `withSqlFuncList(...)` (copied immutably, so mutating your own list afterwards has no effect); operator tokens are a fixed set and are not configurable |
 | `page` / `pageSize` | 1 / 20 | paging used by `getByPages()` when `p` / `pc` are absent |
 
 - Aggregation aliases derive from the column name: `count(wechatId)` → `countWechatId`, `countDistinct(id)` → `countDistinctId`.

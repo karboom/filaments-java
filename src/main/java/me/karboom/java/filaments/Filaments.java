@@ -72,7 +72,9 @@ public abstract class Filaments<T> {
 
     /**
      * 命名等配置。构造期定死，之后不可更换；不传则每个实例各持一份内置默认配置，
-     * 自定义时把 {@code new FilamentsConfig()} 经构造函数传入（多实例共享一份就传同一对象）。
+     * 自定义时把 {@code new FilamentsConfig().withXxx(...)} 经构造函数传入
+     * （多实例共享一份就传同一对象）。配置类型本身不可变：原地改会让构造期建好的列索引
+     * 和运行期拼的列名分裂成两套名字，详见 {@link FilamentsConfig}。
      */
     public final FilamentsConfig config;
 

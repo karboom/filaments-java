@@ -147,12 +147,11 @@ var users = filaments.get(db, new HashMap<>() {{
 
 ### 命名与配置
 
-所有可调项都在 `FilamentsConfig` 上（普通对象：多实例传同一个即等效"全局配置"，不传则各持一份内置默认）。列名与 jsonb 路径段由**同一个命名函数** `naming` 控制，可整体换成 `snake` / `camel` / `lower` / `asIs`，也可组合出自定义规则：
+所有可调项都在 `FilamentsConfig` 上（**不可变对象**：改任何一项都用 `withXxx` 取一份新副本；多实例传同一个即等效"全局配置"，不传则各持一份内置默认）。不可变是必需的而非风格：`naming` 既在实例构造期物化成列索引与 JSON 字段集，又在渲染期当场参与拼列名，原地改会让同一个实例的两套名字分裂，写进库的是错数据。已建实例要换配置，用新 config 重建。列名与 jsonb 路径段由**同一个命名函数** `naming` 控制，可整体换成 `snake` / `camel` / `lower` / `asIs`，也可组合出自定义规则：
 
 ```java
-var config = new FilamentsConfig();
-config.naming = FilamentsConfig::camel;
-// config.naming = s -> "t_" + FilamentsConfig.snake(s);   // 自定义：统一加表前缀
+var config = new FilamentsConfig().withNaming(FilamentsConfig::camel);
+// new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s))   // 自定义：统一加表前缀
 
 var filament = new Filaments<User>("filaments_camel", config) {
     @Override
@@ -173,7 +172,7 @@ var filament = new Filaments<User>("filaments_camel", config) {
 | `mapper` | `DEFAULT_MAPPER` | 所有 JSON 读写共用的唯一 Jackson mapper，须与 `naming` 配对 |
 | `nameSplitter` | `"\|"` | 查询语法里 `字段\|函数\|操作符` 的分隔符（勿用 `.`，与 jsonb 路径冲突） |
 | `aliasSplitter` | `"::"` | 条件别名寻址分隔符，永不进 SQL |
-| `sqlFuncList` | `PG_FUNCS` | 函数链与聚合函数白名单，可整体换预设或增删；操作符 token 是固定集合，不可配置 |
+| `sqlFuncList` | `PG_FUNCS` | 函数链与聚合函数白名单，用 `withSqlFuncList(...)` 整体换预设或换成自定义列表（建副本时做不可变拷贝，之后再改你自己那个 List 不生效）；操作符 token 是固定集合，不可配置 |
 | `page` / `pageSize` | 1 / 20 | `getByPages()` 未传 `p` / `pc` 时的默认分页 |
 
 - 聚合别名由列名派生：`count(wechatId)` → `countWechatId`，`countDistinct(id)` → `countDistinctId`。

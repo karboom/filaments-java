@@ -121,12 +121,28 @@ class FilamentsConfigTest {
         }
 
         @Test
-        void instancesAreIndependent() {
-            var other = new FilamentsConfig();
-            config.pageSize = 7L;
+        void withCopiesLeaveOriginalIntact() {
+            var changed = config.withPageSize(7L);
             assertAll(
-                    () -> assertThat(config.pageSize).isEqualTo(7),
-                    () -> assertThat(other.pageSize).isEqualTo(20));
+                    () -> assertThat(changed.pageSize).isEqualTo(7),
+                    // 原实例一字未动：withXxx 产出的是整份新副本
+                    () -> assertThat(config.pageSize).isEqualTo(20));
+        }
+
+        @Test
+        void withCopiesKeepOtherItems() {
+            var changed = config.withNaming(FilamentsConfig::camel)
+                    .withNameSplitter("#")
+                    .withSqlFuncList(FilamentsConfig.MYSQL_FUNCS);
+            assertAll(
+                    () -> assertThat(changed.naming.apply("wechat_id")).isEqualTo("wechatId"),
+                    () -> assertThat(changed.nameSplitter).isEqualTo("#"),
+                    () -> assertThat(changed.sqlFuncList).isSameAs(FilamentsConfig.MYSQL_FUNCS),
+                    // 没点到的项照抄默认值
+                    () -> assertThat(changed.aliasSplitter).isEqualTo(FilamentsConfig.DEFAULT_ALIAS_SPLITTER),
+                    () -> assertThat(changed.page).isEqualTo(1),
+                    () -> assertThat(changed.pageSize).isEqualTo(20),
+                    () -> assertThat(changed.mapper).isSameAs(FilamentsConfig.DEFAULT_MAPPER));
         }
 
         @Test
@@ -147,8 +163,7 @@ class FilamentsConfigTest {
 
         @Test
         void prefixedNamingAppliesToColumns() {
-            var config = new FilamentsConfig();
-            config.naming = s -> "t_" + FilamentsConfig.snake(s);
+            var config = new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s));
             var filament = new TestFilaments("users", "id", config);
             var sql = filament.build(using(POSTGRES), Map.of("rt", "name,createTime"))
                     .getSQL();
@@ -158,8 +173,7 @@ class FilamentsConfigTest {
 
         @Test
         void camelNamingAppliesToColumns() {
-            var config = new FilamentsConfig();
-            config.naming = FilamentsConfig::camel;
+            var config = new FilamentsConfig().withNaming(FilamentsConfig::camel);
             var filament = new TestFilaments("users", "id", config);
             var sql = filament.build(using(POSTGRES), Map.of("rt", "wechatId,createTime"))
                     .getSQL();

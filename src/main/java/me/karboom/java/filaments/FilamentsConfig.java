@@ -1,7 +1,9 @@
 package me.karboom.java.filaments;
 
 import cn.hutool.core.util.StrUtil;
-import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import lombok.With;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.cfg.DateTimeFeature;
@@ -12,12 +14,17 @@ import java.util.Locale;
 import java.util.function.UnaryOperator;
 
 /**
- * 命名配置：模型字段名 -> 数据库列名、模型字段名 -> JSON 键名。
+ * 实例配置：命名、分隔符、函数白名单、分页默认值、JSON mapper。
  *
- * <p>用法：{@code new FilamentsConfig()} 设好字段后传给构造函数
- * （{@code new Filaments<User>("t", config) {...}}），config 构造期定死，之后不可更换。
- * 不显式传的实例各自持有一份内置默认配置；需要多实例共享配置，就自己持有同一个
- * config 实例逐个传入——不存在应用级全局配置对象。
+ * <p>不可变：7 项都是 final 字段，改配置只能经 {@code withXxx} 拿到改了一处的新副本。
+ * 这不是洁癖——{@link Filaments} 构造期就把 {@link #naming} 的结果物化成列索引与 JSON 字段集，
+ * 而渲染、读写路径仍在运行期当场调 {@code naming}。配置一旦允许原地改，同一个实例就会
+ * 一半按旧名查索引、一半按新名拼 SQL，落到库里的是错数据而不是异常。
+ * 已建好的实例要换配置，用新 config 重新建一个。
+ *
+ * <p>用法：{@code new FilamentsConfig().withNaming(FilamentsConfig::camel)} 传给构造函数
+ * （{@code new Filaments<User>("t", config) {...}}）。不显式传的实例各自持有一份内置默认配置；
+ * 需要多实例共享配置，就自己持有同一个 config 实例逐个传入——不存在应用级全局配置对象。
  *
  * <p>命名规则就是 {@link #naming} 一个函数字段（列名与 jsonb 路径段共用，
  * 假设一个系统内风格统一），默认 {@link #snake}；可整体换成 {@link #camel} /
@@ -25,8 +32,10 @@ import java.util.function.UnaryOperator;
  * （如加表前缀：{@code s -> "t_" + FilamentsConfig.snake(s)}）。
  * 只影响"名字怎么拼"，不影响存量数据：换规则前请确认库里列名 / jsonb 键名形态。
  */
-@Data
-public class FilamentsConfig {
+@With
+@ToString
+@EqualsAndHashCode
+public final class FilamentsConfig {
 
     /** 查询语法的默认名字分隔符 */
     public static final String DEFAULT_NAME_SPLITTER = "|";
@@ -107,14 +116,14 @@ public class FilamentsConfig {
      * 同时也是 jsonb 查询路径段（{@code extra.xxx} 的 xxx）的改写规则。
      * 前提假设：一个系统内列名与 JSON 键用同一种风格；序列化侧的键风格由 {@link #mapper} 决定，需配对设置。
      */
-    public UnaryOperator<String> naming = FilamentsConfig::snake;
+    public final UnaryOperator<String> naming;
 
     /**
      * 查询语法里的名字分隔符：{@code 字段|函数(参数)|操作符}。
      * 换成别的（如 {@code #}）可以让条件键整体不带竖线，方便走 URL 编码敏感的链路；
      * 不要用 {@code .}——它和 jsonb 的点分路径（{@code extra.age}）冲突。
      */
-    public String nameSplitter = DEFAULT_NAME_SPLITTER;
+    public final String nameSplitter;
 
     /**
      * 条件别名分隔符：key = {@code 别名::字段|函数链|操作符}。
@@ -126,31 +135,61 @@ public class FilamentsConfig {
      * 别名只是查询参数内部的寻址名字，永不参与 SQL 拼接。
      * 改动约束：不能与 {@code nameSplitter} 互为子串、不含 {@code .}，否则 key 解析歧义。
      */
-    public String aliasSplitter = DEFAULT_ALIAS_SPLITTER;
+    public final String aliasSplitter;
 
     /**
      * 函数链 / 聚合函数白名单（{@code SelectSpecBuilder.buildFuncChain} 精确匹配，
      * 参数仅允许数字字面量）。默认 {@link #PG_FUNCS}，可整体换成
      * {@link #MYSQL_FUNCS} / {@link #SQLSERVER_FUNCS} 或自定义列表。
      */
-    public List<String> sqlFuncList = PG_FUNCS;
+    public final List<String> sqlFuncList;
 
     /**
      * pages() 未指定 p 时的页码。
      * <p>分页数值（页码/页大小/offset/total）全链路统一 Long：int 域的 (p-1)*pc 会溢出成
      * 负数渲染进 SQL，total 超过 21 亿时 Integer.valueOf 直接炸。
      */
-    public Long page = 1L;
+    public final Long page;
 
     /** pages() 未指定 pc 时的页大小 */
-    public Long pageSize = 20L;
+    public final Long pageSize;
 
     /**
      * 所有 JSON 读写（jsonb 字段编解码 + 结果行映射）共用的唯一 mapper。
      * 换序列化风格时自行用 JsonMapper.builder() 配一个，并与 {@link #naming} 配对；
      * 务必保留 disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)，参考 {@link #DEFAULT_MAPPER}。
      */
-    public ObjectMapper mapper = DEFAULT_MAPPER;
+    public final ObjectMapper mapper;
+
+    // region 构造（默认值 + withXxx 的唯一出口）
+
+    /**
+     * 内置默认配置：{@link #snake} 命名、{@code |} 与 {@code ::} 分隔符、{@link #PG_FUNCS}、
+     * 页 1 / 页大小 20、{@link #DEFAULT_MAPPER}。要改任何一项请走 {@code withXxx} 取新副本。
+     */
+    public FilamentsConfig() {
+        this(FilamentsConfig::snake, DEFAULT_NAME_SPLITTER, DEFAULT_ALIAS_SPLITTER,
+                PG_FUNCS, 1L, 20L, DEFAULT_MAPPER);
+    }
+
+    /**
+     * 全参构造：7 个 {@code withXxx} 复制副本时汇聚到这唯一一处，字段定型也在这里。
+     * <p>入参顺序与字段声明顺序一致（Lombok 的 {@code @With} 按此顺序回传）。
+     * 白名单表做 {@code List.copyOf}：调用方之后再改自己那个 List 影响不到已建好的配置；
+     * {@code List.of} 产出的表原样返回同一实例，默认值不额外分配。
+     */
+    private FilamentsConfig(UnaryOperator<String> naming, String nameSplitter, String aliasSplitter,
+                            List<String> sqlFuncList, Long page, Long pageSize, ObjectMapper mapper) {
+        this.naming = naming;
+        this.nameSplitter = nameSplitter;
+        this.aliasSplitter = aliasSplitter;
+        this.sqlFuncList = List.copyOf(sqlFuncList);
+        this.page = page;
+        this.pageSize = pageSize;
+        this.mapper = mapper;
+    }
+
+    // endregion
 
     // region 命名备选实现（幂等：输入已是目标风格时结果不变，camel 除外按 hutool 语义）
 

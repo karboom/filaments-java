@@ -145,9 +145,14 @@ class ConstructorTest {
 
         @Test
         void configsAreNotSharedBetweenInstances() {
-            var a = new TestFilaments(TestDb.TABLE);
+            var shared = new FilamentsConfig().withPageSize(5L);
+            var a = new TestFilaments(TestDb.TABLE, shared);
             var b = new TestFilaments(TestDb.TABLE);
-            a.config.pageSize = 5L;
+            // 显式传的 config 原对象被持有（多实例共享就靠这个）；不传的各持一份默认配置。
+            // 配置不可变，所以"共享一份"不会再出现一个实例改动影响另一个。
+            assertThat(a.config).isSameAs(shared);
+            assertThat(a.config.pageSize).isEqualTo(5);
+            assertThat(b.config).isNotSameAs(a.config);
             assertThat(b.config.pageSize).isEqualTo(20);
         }
     }
