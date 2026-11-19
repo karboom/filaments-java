@@ -484,6 +484,20 @@ class FilamentsTest {
             var res = f.getByPages(TestDb.db(), Map.of("rt", "id,name", "od", "id", "pc", 2, "p", 3, "pg", true));
             assertThat(res.list.stream().map(u -> u.id).toList()).containsExactly("4");
         }
+
+        @Test
+        void pgIsPresenceNotTruthiness() {
+            // 钉住契约：pg 只看键在不在，值不参与判断（见 README 保留关键字一节）。
+            // 反例若被"顺手改成值判断"，pg=false 的调用会静默拿到 total=null。
+            seed(4);
+            var falseRes = f.getByPages(TestDb.db(), Map.of("rt", "id,name", "pg", false));
+            var zeroRes = f.getByPages(TestDb.db(), Map.of("rt", "id,name", "pg", 0));
+            var blankRes = f.getByPages(TestDb.db(), Map.of("rt", "id,name", "pg", ""));
+            assertAll(
+                    () -> assertThat(falseRes.total).isEqualTo(4),
+                    () -> assertThat(zeroRes.total).isEqualTo(4),
+                    () -> assertThat(blankRes.total).isEqualTo(4));
+        }
     }
 
     // endregion

@@ -66,9 +66,11 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | p   | page number                      | 1       | ?p=3                        | `limit 20 offset 40`                                     |
 | pc  | page size                        | 20      | ?pc=18                      | `limit 18 offset 0`                                      |
 | od  | ordering (`-` = desc)            | null    | ?od=id,-height              | `order by id asc, height desc`                           |
-| pg  | compute total count (in `getByPages`) | 0       | ?pg=1                       | `count(*)` unpaged; `limit ? offset ?` only on the rows  |
+| pg  | compute total count — **presence is the switch, the value is ignored** (only in `getByPages`) | absent | ?pg=1 | `count(*)` unpaged; `limit ? offset ?` only on the rows  |
 
 > These five describe *row* results, so they only apply to `get` / `getByPages` / `getByIds`; `aggregation` consumes just the conditions (including `lg` / `raw`), so handing the same map to both is safe — pagination cannot truncate the count and row projections cannot leak into GROUP BY.
+>
+> `pg` is presence-based: any `pg` key computes the total, including `pg=0` and `pg=false`; leave the key out to skip the count.
 >
 > After splitting `rt` on commas each segment is a bare column name (not identifier-checked, no jsonb paths, no func chains): a column missing in the database surfaces as a DB error, a column missing in the model is silently skipped.
 

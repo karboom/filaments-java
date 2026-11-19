@@ -65,9 +65,11 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | p        | 指定当前页码                     | 1      | ?p=3         | ```limit 20 offset 40```                |
 | pc       | 指定页内行数                     | 20     | ?pc=18       | ```limit 18 offset 0```                 |
 | od       | 指定排序规则（`-` 为降序）        | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
-| pg       | 是否需要计算分页(仅 getByPages 生效) | 0      | ?pg=1        | ``` count(*) 不带 limit/offset，行结果才分页 ``` |
+| pg       | 算不算总数——**只看键在不在，值不参与判断**（仅 getByPages 生效） | 不传 | ?pg=1 | ``` count(*) 不带 limit/offset，行结果才分页 ``` |
 
 > 这五个键只描述"行结果"，因此只对 `get` / `getByPages` / `getByIds` 生效；`aggregation` 只取其中的条件（含 `lg` / `raw`），同一份 query 直接喂给两者是安全的（分页不会截断 count，投影不会混进 GROUP BY）。
+>
+> `pg` 是"存在即开启"：只要键在就算总数，`pg=0`、`pg=false` 也一样算；不想要 count 就别带这个键。
 >
 > `rt` 每段只当列名（不校验、不认 jsonb 路径与函数链）：库里没有的列由数据库报错，模型没声明的列静默跳过。
 

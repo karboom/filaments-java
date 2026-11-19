@@ -231,7 +231,14 @@ public class SelectSpecBuilder {
         var pc = positiveLong(query, "pc");
         spec.setLimit(pc);
         if (query.containsKey("p")) {
-            spec.setOffset((positiveLong(query, "p") - 1) * pc);
+            var p = positiveLong(query, "p");
+            long offset;
+            try {
+                offset = Math.multiplyExact(p - 1, pc);
+            } catch (ArithmeticException e) {
+                throw new FilamentsError("分页偏移溢出：(p-1)*pc 超出 long 范围，p=%s, pc=%s".formatted(p, pc), e);
+            }
+            spec.setOffset(offset);
         }
     }
 
@@ -240,7 +247,8 @@ public class SelectSpecBuilder {
      * <p>正数不是额外要求而是必需的：{@code pc=0} 或 {@code p=0} 会渲染成 {@code limit 0} /
      * {@code offset -20} 这类合法但语义相反的 SQL，报错点跑到 DB 侧，看不出是参数问题。
      * <p>用 Long 而非 Integer：offset = (p-1)*pc 在 int 域会溢出成负数再渲染进 SQL，
-     * long 域则能原样交给 PG 判定；与 total 的 bigint 保持同一数值空间。
+     * long 域溢出概率极低但仍可能发生，故 offset 计算用 {@link Math#multiplyExact} 兜底，
+     * 溢出直接报错而不是把负数交给 DB；与 total 的 bigint 保持同一数值空间。
      */
     private Long positiveLong(Map<String, Object> query, String key) {
         var raw = String.valueOf(query.get(key));

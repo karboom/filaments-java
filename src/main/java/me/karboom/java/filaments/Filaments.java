@@ -553,10 +553,14 @@ public abstract class Filaments<T> {
         return q;
     }
 
+    /**
+     * 子查询挂接：sub 的 FROM 一律强制替换为本 Filament 挂载表（子查询查哪张表不由调用方决定）。
+     * 走 QOM `$from` 而非 addFrom：它返回替换后的不可变拷贝，入参 sub 不被改动——
+     * addFrom 是追加语义，同一 sub 复用于两次构建（如取列表后又拿去计数）会叠成 `from t, t`。
+     */
     protected SelectQuery<Record> buildSub(SelectQuery<Record> q, SelectQuery<Record> sub) {
         if (sub != null) {
-            sub.addFrom(tableRef());
-            q.addFrom(table(sub));
+            q.addFrom(table(sub.$from(List.of(tableRef()))));
         } else {
             q.addFrom(tableRef());
         }
@@ -867,6 +871,9 @@ public abstract class Filaments<T> {
 
         res.list = this.get(db, copyQuery);
 
+        // pg 是"存在即开启"的开关，值不参与判断（pg=0 / pg=false 同样算）：
+        // count 是有代价的额外查询，控制"要不要花这笔代价"的旋钮放在键的出现与否上，
+        // 而不是让调用方去猜某个特殊值代表关闭。
         if (copyQuery.containsKey("pg")) {
             // 计数直接复用同一份 query：buildAggregation 只取条件键，rt/od/p/pc 在这里不参与，
             // 无需在调用方剥键
@@ -976,7 +983,13 @@ public abstract class Filaments<T> {
             var value = specBuilder.buildValue(target.get(func));
 
             for (var f: value) {
-                var fieldName = fieldNameSafe((String) f);
+                // buildValue 展开的是 Object[]，元素未必是字符串：裸 (String) 转只抛 ClassCastException，
+                // 指不出哪个聚合目标的哪一项；null 元素也会一路走到 fieldNameSafe 里 NPE。统一在此拦下。
+                if (!(f instanceof String item)) {
+                    throw new FilamentsError("聚合目标 %s 的字段必须是字符串，实际 %s: %s".formatted(
+                            func, f == null ? "null" : f.getClass().getName(), f));
+                }
+                var fieldName = fieldNameSafe(item);
                 // 防注入：字段名逐段过标识符白名单校验，拒绝结构字符拼入 SQL
                 identsSafe(fieldName);
                 var sqlField = fieldName.contains(".") ? jsonKeyExpr(fieldName) : columnExpr(fieldName);

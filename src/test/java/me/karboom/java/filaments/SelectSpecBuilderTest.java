@@ -102,6 +102,26 @@ class SelectSpecBuilderTest {
         }
 
         @Test
+        void paginationOffsetOverflowThrows() {
+            // (p-1)*pc 在 long 域仍会溢出：必须在渲染进 SQL 之前带参数报错
+            var q = new LinkedHashMap<String, Object>();
+            q.put("pc", 2L);
+            q.put("p", Long.MAX_VALUE);
+            assertThatThrownBy(() -> builder.parse(q))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("分页偏移溢出")
+                    .hasMessageContaining("p=" + Long.MAX_VALUE)
+                    .hasCauseInstanceOf(ArithmeticException.class);
+        }
+
+        @Test
+        void paginationOffsetNearMaxNoOverflow() {
+            // p 极大但 pc=1：(p-1)*1 不溢出，应原样进 offset
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("pc", 1L, "p", Long.MAX_VALUE)));
+            assertThat(spec.getOffset()).isEqualTo(Long.MAX_VALUE - 1);
+        }
+
+        @Test
         void reservedKeysExcludedFromWhere() {
             var q = new LinkedHashMap<String, Object>();
             q.put("rt", "id,name");
