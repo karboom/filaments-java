@@ -64,6 +64,8 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | rt       | 指定返回字段（仅列名，不支持 jsonb 路径/下标） | *      | ?rt=name,age | ```select `name`, `age` ```             |
 | p        | 指定当前页码                     | 1      | ?p=3         | ```limit 20 offset 40```                |
 | pc       | 指定页内行数                     | 20     | ?pc=18       | ```limit 18 offset 0```                 |
+
+> `p` 与 `pc` 各自独立可用，缺的那个取 `config.page` / `config.pageSize` 默认：`?p=3` 就是 `limit 20 offset 40`，`?pc=18` 就是 `limit 18 offset 0`。**两个键都不给时不分页**——`get` 因此仍是全量取数入口，要"永远分页"就用 `getByPages`（它两个键都补默认值）。
 | od       | 指定排序规则（`-` 为降序）        | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
 | pg       | 算不算总数——**只看键在不在，值不参与判断**（仅 getByPages 生效） | 不传 | ?pg=1 | ``` count(*) 不带 limit/offset，行结果才分页 ``` |
 
@@ -175,7 +177,7 @@ var filament = new Filaments<User>("filaments_camel", config) {
 | `nameSplitter` | `"\|"` | 查询语法里 `字段\|函数\|操作符` 的分隔符（勿用 `.`，与 jsonb 路径冲突） |
 | `aliasSplitter` | `"::"` | 条件别名寻址分隔符，永不进 SQL |
 | `sqlFuncList` | `PG_FUNCS` | 函数链与聚合函数白名单，用 `withSqlFuncList(...)` 整体换预设或换成自定义列表（建副本时做不可变拷贝，之后再改你自己那个 List 不生效）；操作符 token 是固定集合，不可配置 |
-| `page` / `pageSize` | 1 / 20 | `getByPages()` 未传 `p` / `pc` 时的默认分页 |
+| `page` / `pageSize` | 1 / 20 | 分页默认值：`getByPages()` 两键都不传时用它补齐，`get()` 只传其中一个时另一个用它补 |
 
 - 聚合别名由列名派生：`count(wechatId)` → `countWechatId`，`countDistinct(id)` → `countDistinctId`。
 - 自配 `mapper` 时务必保留 `disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)`，否则带 offset 的时间会被静默调到本地时区：`JsonMapper.builder().propertyNamingStrategy(...).disable(...).build()`。

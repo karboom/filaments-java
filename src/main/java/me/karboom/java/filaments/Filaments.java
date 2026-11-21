@@ -859,7 +859,10 @@ public abstract class Filaments<T> {
     }
 
     /**
-     * 分页查询接口，一般用于返回给前端
+     * 分页查询接口，一般用于返回给前端。
+     * <p>与 {@link #get} 的分工：{@code get} 只在查询里出现 {@code p} 或 {@code pc} 时才分页
+     * （两个键都不给就是全量取数），本方法永远分页——所以这里把两个键都补齐，
+     * 前端少传一个参数不会退化成一次全表扫描。
      */
     public PageResult<T> getByPages(DSLContext db, Map<String, Object> query) {
         // 不能影响外部传入的参数

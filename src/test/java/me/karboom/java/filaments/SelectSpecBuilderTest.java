@@ -34,6 +34,20 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  * </pre>
  *
  * <pre>
+ * 正交表（parsePagination：分页键组合，config 默认 page=1 / pageSize=20）：
+ * ┌────────────┬───────────────┬────────────────────┐
+ * │ 键组合     │ limit         │ offset             │
+ * ├────────────┼───────────────┼────────────────────┤
+ * │ 都不给     │ null（不分页）│ null               │
+ * │ 只给 pc    │ pc            │ null（即第 1 页）  │
+ * │ 只给 p     │ pageSize=20   │ (p-1)*20           │
+ * │ p + pc     │ pc            │ (p-1)*pc           │
+ * │ p=0 / pc=0 │ FilamentsError│ —                  │
+ * │ p 极大     │ 溢出报错      │ —                  │
+ * └────────────┴───────────────┴────────────────────┘
+ * </pre>
+ *
+ * <pre>
  * 正交表（buildFieldCondition：条件 key 形态）：
  * ┌──────────────────┬──────────┬──────────────┬──────────┐
  * │ key              │ field    │ funcChain    │ operator │
@@ -99,6 +113,40 @@ class SelectSpecBuilderTest {
             assertAll(
                     () -> assertThat(spec.getLimit()).isEqualTo(5),
                     () -> assertThat(spec.getOffset()).isNull());
+        }
+
+        @Test
+        void paginationOnlyPageUsesConfigPageSize() {
+            // 只给 p：页大小取 config.pageSize 默认，绝不能退化成不分页
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("p", 3)));
+            assertAll(
+                    () -> assertThat(spec.getLimit()).isEqualTo(20),
+                    () -> assertThat(spec.getOffset()).isEqualTo(40));
+        }
+
+        @Test
+        void paginationOnlyPageFollowsCustomConfig() {
+            var custom = new SelectSpecBuilder(new FilamentsConfig().withPageSize(7L));
+            var spec = custom.parse(new LinkedHashMap<>(Map.of("p", 2)));
+            assertAll(
+                    () -> assertThat(spec.getLimit()).isEqualTo(7),
+                    () -> assertThat(spec.getOffset()).isEqualTo(7));
+        }
+
+        @Test
+        void paginationNeitherKeyStaysUnpaged() {
+            // 两个键都不给：get 的全量语义，不能被默认值悄悄截断
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("name", "x")));
+            assertAll(
+                    () -> assertThat(spec.getLimit()).isNull(),
+                    () -> assertThat(spec.getOffset()).isNull());
+        }
+
+        @Test
+        void paginationOnlyPageStillValidatesValue() {
+            assertThatThrownBy(() -> builder.parse(new LinkedHashMap<>(Map.of("p", 0))))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("分页参数 p 必须是正整数");
         }
 
         @Test

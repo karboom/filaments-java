@@ -65,6 +65,8 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | rt  | select fields (column names only — no jsonb paths/indexes) | *  | ?rt=name,age               | `select name, age`                                       |
 | p   | page number                      | 1       | ?p=3                        | `limit 20 offset 40`                                     |
 | pc  | page size                        | 20      | ?pc=18                      | `limit 18 offset 0`                                      |
+
+> `p` and `pc` work independently; whichever is missing falls back to `config.page` / `config.pageSize`, so `?p=3` alone is `limit 20 offset 40` and `?pc=18` alone is `limit 18 offset 0`. **With neither key there is no pagination at all** — `get` stays a full-scan entry point; use `getByPages` for "always paged" (it fills in both defaults).
 | od  | ordering (`-` = desc)            | null    | ?od=id,-height              | `order by id asc, height desc`                           |
 | pg  | compute total count — **presence is the switch, the value is ignored** (only in `getByPages`) | absent | ?pg=1 | `count(*)` unpaged; `limit ? offset ?` only on the rows  |
 
@@ -176,7 +178,7 @@ var filament = new Filaments<User>("filaments_camel", config) {
 | `nameSplitter` | `"\|"` | separator of `field\|function\|operator` in query keys (don't use `.` — it collides with jsonb paths) |
 | `aliasSplitter` | `"::"` | condition-alias separator, never reaches SQL |
 | `sqlFuncList` | `PG_FUNCS` (also `MYSQL_FUNCS` / `SQLSERVER_FUNCS`) | function-chain and aggregate whitelist, replaced wholesale via `withSqlFuncList(...)` (copied immutably, so mutating your own list afterwards has no effect); operator tokens are a fixed set and are not configurable |
-| `page` / `pageSize` | 1 / 20 | paging used by `getByPages()` when `p` / `pc` are absent |
+| `page` / `pageSize` | 1 / 20 | paging defaults: `getByPages()` fills both when absent, `get()` fills whichever of the two you left out |
 
 - Aggregation aliases derive from the column name: `count(wechatId)` → `countWechatId`, `countDistinct(id)` → `countDistinctId`.
 - Build a custom mapper with `JsonMapper.builder().propertyNamingStrategy(...).disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE).build()` and keep that disable, or offset-bearing times silently shift to the local zone.

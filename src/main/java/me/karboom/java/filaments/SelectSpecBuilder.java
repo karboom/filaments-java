@@ -223,22 +223,34 @@ public class SelectSpecBuilder {
         }
     }
 
+    /**
+     * 分页解析：{@code p} 与 {@code pc} 任一键出现即进入分页，缺的那个取 config 默认值。
+     * <p>只认 {@code pc} 会把「只传 {@code p}」当成没有分页意图：{@code p} 被丢弃、SQL 不带
+     * limit/offset，调用方拿到整个表却看不出任何异常——静默返回全表比返回一页错数据更难查。
+     * <p>两个键都不给时仍不分页：{@code get} 是内部全量取数入口，不该被这里的默认值悄悄截断；
+     * 要"永远分页"的调用方走 {@code Filaments#getByPages}，它自己把两个键都补齐。
+     */
     private void parsePagination(Map<String, Object> query, SelectSpec spec) {
-        if (!query.containsKey("pc")) {
+        var hasPc = query.containsKey("pc");
+        var hasPage = query.containsKey("p");
+        if (!hasPc && !hasPage) {
             return;
         }
 
-        var pc = positiveLong(query, "pc");
+        var pc = hasPc ? positiveLong(query, "pc") : config.pageSize;
         spec.setLimit(pc);
-        if (query.containsKey("p")) {
-            var p = positiveLong(query, "p");
-            long offset;
-            try {
-                offset = Math.multiplyExact(p - 1, pc);
-            } catch (ArithmeticException e) {
-                throw new FilamentsError("分页偏移溢出：(p-1)*pc 超出 long 范围，p=%s, pc=%s".formatted(p, pc), e);
-            }
-            spec.setOffset(offset);
+
+        // 只给 pc 不写 offset：语义就是第 1 页，SQL 保持 `fetch next ? rows only`，
+        // 多渲染一个 `offset 0` 只是噪声
+        if (!hasPage) {
+            return;
+        }
+
+        var page = positiveLong(query, "p");
+        try {
+            spec.setOffset(Math.multiplyExact(page - 1, pc));
+        } catch (ArithmeticException e) {
+            throw new FilamentsError("分页偏移溢出：(p-1)*pc 超出 long 范围，p=%s, pc=%s".formatted(page, pc), e);
         }
     }
 

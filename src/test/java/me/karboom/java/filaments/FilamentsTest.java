@@ -328,6 +328,19 @@ class FilamentsTest {
         }
 
         @Test
+        void pageWithoutSizeStillPaginates() {
+            // 只给 p 曾经被当成"没有分页意图"：p 被丢弃、整表返回且不报错。
+            // 现在缺的页大小由 config.pageSize 补；两个键都不给时仍是全量取数。
+            var size2 = new TestFilaments(TestDb.TABLE, new FilamentsConfig().withPageSize(2L));
+            seed(5);
+            assertAll(
+                    () -> assertThat(size2.get(TestDb.db(), Map.of("p", 2, "od", "id")).stream().map(u -> u.id).toList())
+                            .containsExactly("2", "3"),
+                    () -> assertThat(f.get(TestDb.db(), Map.of("od", "id")).stream().map(u -> u.id).toList())
+                            .containsExactly("0", "1", "2", "3", "4"));
+        }
+
+        @Test
         void orderDesc() {
             seed(3);
             var ids = f.get(TestDb.db(), Map.of("rt", "id,name", "od", "-id")).stream()
