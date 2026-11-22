@@ -64,11 +64,11 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | rt       | 指定返回字段（仅列名，不支持 jsonb 路径/下标） | *      | ?rt=name,age | ```select `name`, `age` ```             |
 | p        | 指定当前页码                     | 1      | ?p=3         | ```limit 20 offset 40```                |
 | pc       | 指定页内行数                     | 20     | ?pc=18       | ```limit 18 offset 0```                 |
-
-> `p` 与 `pc` 各自独立可用，缺的那个取 `config.page` / `config.pageSize` 默认：`?p=3` 就是 `limit 20 offset 40`，`?pc=18` 就是 `limit 18 offset 0`。**两个键都不给时不分页**——`get` 因此仍是全量取数入口，要"永远分页"就用 `getByPages`（它两个键都补默认值）。
-| od       | 指定排序规则（`-` 为降序）        | Null   | ?id,-height  | ``` order by `id` asc, `height` desc``` |
+| od       | 指定排序规则（`-` 为降序）        | Null   | ?od=id,-height  | ``` order by `id` asc, `height` desc``` |
 | pg       | 算不算总数——**只看键在不在，值不参与判断**（仅 getByPages 生效） | 不传 | ?pg=1 | ``` count(*) 不带 limit/offset，行结果才分页 ``` |
 
+> `p` 与 `pc` 各自独立可用，缺的那个取 `config.page` / `config.pageSize` 默认：`?p=3` 就是 `limit 20 offset 40`，`?pc=18` 就是 `limit 18 offset 0`。**两个键都不给时不分页**——`get` 因此仍是全量取数入口，要"永远分页"就用 `getByPages`（它两个键都补默认值）。
+>
 > 这五个键只描述"行结果"，因此只对 `get` / `getByPages` / `getByIds` 生效；`aggregation` 只取其中的条件（含 `lg` / `raw`），同一份 query 直接喂给两者是安全的（分页不会截断 count，投影不会混进 GROUP BY）。
 >
 > `pg` 是"存在即开启"：只要键在就算总数，`pg=0`、`pg=false` 也一样算；不想要 count 就别带这个键。
@@ -82,7 +82,7 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 ```
 
 - 字段名须为合法标识符（点分路径如 `data.type` 逐段校验）；函数须命中白名单 `FilamentsConfig.sqlFuncList`（默认 `PG_FUNCS`，另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS`），参数仅支持数字字面量；违反即抛错。
-- `|` 是**同一个键内**的分段符，不是"或"：`name|lower|like` 是一个条件 `lower(name) like ?`，只有末段命中操作符表时才是操作符，其余段都是函数链。OR / AND / 取反一律走 `lg`（`(a,b)`、`!(a,b)`）。
+- `|` 是**同一个键内**的分段符，不是"或"：`name|lower|like` 是一个条件 `lower(name) like ?`，只有末段命中操作符表时才是操作符，其余段都是函数链。OR / AND 走 `lg`（`(a,b)`、`!(a,b)`，`!` 只是把括号组标成 OR 连接，不做逻辑取反）；取反只存在于谓词级——用 `ne` / `notIn` / `notBetween` / `notLike` / `isNotNull`，整组 NOT 暂不支持。
 - 名字一律经 `config.naming` 归一化（默认驼峰 → 小写下划线，`userID` → `user_id`），写驼峰或写库里的下划线名都指向同一列。点分路径的**段 0 按列名规则**、其后按 JSON 键规则，故 `extra.totalCount` 与 `extra.total_count` 命中同一个键；数组下标 `data[0].type` 与 `data.0.type` 等价（括号内只接受纯整数）。详见[命名与配置](#命名与配置)。
 
 | 查询字符串                                        | 对应SQL                                                     |
@@ -109,7 +109,7 @@ var users = filaments.get(db, new HashMap<>() {{
 }});
 ```
 
-> `lg` 整体须由一对括号包裹；别名须为合法标识符且不得重复，引用不存在的别名抛错。别名只用于参数寻址，永不参与 SQL 拼接。
+> `lg` 只做参数键的组合逻辑：token 是条件键或别名引用，值一律留在查询参数里，写内联值（`k=v`）直接抛错。顶层括号组可以带裸 token（`a`、`a,(b,c)` 都合法，并列元素按 AND 组合）；没有分隔符的并置括号组（`(a)(b)`）抛错。别名须为合法标识符且不得重复，引用不存在的别名抛错。别名只用于参数寻址，永不参与 SQL 拼接。
 
 ### 操作符
 
@@ -132,7 +132,7 @@ var users = filaments.get(db, new HashMap<>() {{
 | ?name&#124;isNull=        | ```  where `name` is null ```                        |
 | ?name&#124;isNotNull=     | ```  where `name` is not null ```                    |
 
-> `isNull` / `isNotNull` 不取参数（键上绑什么都忽略，谓词没有比较对象），也可接在函数链后（`extra.age|substr(1,2)|isNull`）；取反不需要额外操作符，`lg` 里写 `!(name|isNull)`。
+> `isNull` / `isNotNull` 不取参数（键上绑什么都忽略，谓词没有比较对象），也可接在函数链后（`extra.age|substr(1,2)|isNull`）；两者互为反义，取反就是换成 `isNotNull`——`lg` 里的 `!(...)` 只是 OR 连接标记，不会渲染成 NOT。
 
 ### 值的形态
 

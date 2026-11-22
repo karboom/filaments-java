@@ -703,7 +703,7 @@ public abstract class Filaments<T> {
             case FieldCondition.GT -> condition("%s > ?".formatted(funcChainResult), singleValue(fc));
             case FieldCondition.LE -> condition("%s <= ?".formatted(funcChainResult), singleValue(fc));
             case FieldCondition.LT -> condition("%s < ?".formatted(funcChainResult), singleValue(fc));
-            // like 只有一个 pattern：多模式请用别名 + lg 组合（`l1::name|like=a%`、`l2::name|like=%b`）
+            // like 只有一个 pattern：多模式用别名键传值 + lg 组合（参数 l1::name|like=a%、l2::name|like=%b，lg 写 !(l1,l2)）
             case FieldCondition.LIKE -> condition("%s like ?".formatted(funcChainResult), singleValue(fc));
             case FieldCondition.NOT_LIKE -> condition("%s not like ?".formatted(funcChainResult), singleValue(fc));
             case FieldCondition.IN -> {
@@ -718,7 +718,7 @@ public abstract class Filaments<T> {
             case FieldCondition.BETWEEN -> condition("%s between ? and ?".formatted(funcChainResult), rangeValues(fc));
             case FieldCondition.NOT_BETWEEN -> condition("%s not between ? and ?".formatted(funcChainResult), rangeValues(fc));
             // 空值判定不带绑定参数：键上的值（=1 / 留空 / 任意内容）一律忽略，只渲染谓词本身。
-            // 取反不需要专门语法：lg 里 !(name|isNull) 即 NOT (... is null)
+            // 取反就是换用另一个谓词（isNotNull）：lg 的 !(...) 只是括号组的 OR 连接标记，不做逻辑取反
             case FieldCondition.IS_NULL -> condition("%s is null".formatted(funcChainResult));
             case FieldCondition.IS_NOT_NULL -> condition("%s is not null".formatted(funcChainResult));
             case FieldCondition.INTERSECT -> {

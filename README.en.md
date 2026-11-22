@@ -65,11 +65,11 @@ var page = userFilament.getByPages(db, new HashMap<>() {{
 | rt  | select fields (column names only — no jsonb paths/indexes) | *  | ?rt=name,age               | `select name, age`                                       |
 | p   | page number                      | 1       | ?p=3                        | `limit 20 offset 40`                                     |
 | pc  | page size                        | 20      | ?pc=18                      | `limit 18 offset 0`                                      |
-
-> `p` and `pc` work independently; whichever is missing falls back to `config.page` / `config.pageSize`, so `?p=3` alone is `limit 20 offset 40` and `?pc=18` alone is `limit 18 offset 0`. **With neither key there is no pagination at all** — `get` stays a full-scan entry point; use `getByPages` for "always paged" (it fills in both defaults).
 | od  | ordering (`-` = desc)            | null    | ?od=id,-height              | `order by id asc, height desc`                           |
 | pg  | compute total count — **presence is the switch, the value is ignored** (only in `getByPages`) | absent | ?pg=1 | `count(*)` unpaged; `limit ? offset ?` only on the rows  |
 
+> `p` and `pc` work independently; whichever is missing falls back to `config.page` / `config.pageSize`, so `?p=3` alone is `limit 20 offset 40` and `?pc=18` alone is `limit 18 offset 0`. **With neither key there is no pagination at all** — `get` stays a full-scan entry point; use `getByPages` for "always paged" (it fills in both defaults).
+>
 > These five describe *row* results, so they only apply to `get` / `getByPages` / `getByIds`; `aggregation` consumes just the conditions (including `lg` / `raw`), so handing the same map to both is safe — pagination cannot truncate the count and row projections cannot leak into GROUP BY.
 >
 > `pg` is presence-based: any `pg` key computes the total, including `pg=0` and `pg=false`; leave the key out to skip the count.
@@ -83,7 +83,7 @@ field|function(args)...|operator=value
 ```
 
 - Field names must be valid SQL identifiers (dotted paths like `data.type` are checked segment by segment); functions must be in `FilamentsConfig.sqlFuncList` (default `PG_FUNCS`, with `MYSQL_FUNCS` / `SQLSERVER_FUNCS` presets) and take numeric literals only. Violations throw.
-- `|` separates segments of *one* key and is not "OR": `name|lower|like` is the single condition `lower(name) like ?`. Only a trailing segment that matches the operator table is an operator; the rest are func-chain entries. OR / AND / NOT are written with `lg` (`(a,b)`, `!(a,b)`).
+- `|` separates segments of *one* key and is not "OR": `name|lower|like` is the single condition `lower(name) like ?`. Only a trailing segment that matches the operator table is an operator; the rest are func-chain entries. OR / AND are written with `lg` (`(a,b)`, `!(a,b)` — `!` only marks a group as OR-joined, it does not negate); negation exists only at the predicate level via `ne` / `notIn` / `notBetween` / `notLike` / `isNotNull`, there is no group-level NOT yet.
 - Every name goes through `config.naming` (default camelCase → lowercase snake_case, `userID` → `user_id`), so either spelling addresses the same column. In a dotted jsonb path **segment 0** follows the column rule and the rest the JSON-key rule, so `extra.totalCount` and `extra.total_count` address the same key; `data[0].type` and `data.0.type` are equivalent (a bracket must contain a plain integer). See [Naming and configuration](#naming-and-configuration).
 
 | Query string                                       | SQL                                                            |
@@ -110,7 +110,7 @@ var users = filaments.get(db, new HashMap<>() {{
 }});
 ```
 
-> The whole `lg` expression must be wrapped in one pair of parentheses; an alias must be a valid identifier (letter/underscore first, then letters, digits or underscores) and unique, and referencing a missing alias throws. Aliases only address parameters and never reach the SQL.
+> `lg` only composes parameter keys: a token is a condition key or an alias reference, values always stay in the query map — an inline `k=v` throws. Top-level bare tokens are valid (`a`, `a,(b,c)`; juxtaposed elements combine with AND), while parenthesis groups without any separator (`(a)(b)`) throw. An alias must be a valid identifier (letter/underscore first, then letters, digits or underscores) and unique, and referencing a missing alias throws. Aliases only address parameters and never reach the SQL.
 
 ### Operators
 
@@ -133,7 +133,7 @@ Operator tokens are exact and case-sensitive (camelCase, as listed). A last segm
 | ?name&#124;isNull=        | `where name is null`                    |
 | ?name&#124;isNotNull=     | `where name is not null`                |
 
-> `isNull` / `isNotNull` take no parameter — whatever is bound to the key is ignored, because the predicate has nothing to compare against — and they compose with a func chain (`extra.age|substr(1,2)|isNull`). Negation needs no extra operator: write `!(name|isNull)` in `lg`.
+> `isNull` / `isNotNull` take no parameter — whatever is bound to the key is ignored, because the predicate has nothing to compare against — and they compose with a func chain (`extra.age|substr(1,2)|isNull`). They are each other's negation — negate by switching to `isNotNull`; `!(...)` in `lg` only marks OR joining, it never renders NOT.
 
 ### Value shapes
 

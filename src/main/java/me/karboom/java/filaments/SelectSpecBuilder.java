@@ -183,13 +183,11 @@ public class SelectSpecBuilder {
         return aliasMap.getOrDefault(token, token);
     }
 
-    /** 递归收集逻辑树引用到的真实条件键（内联 k=v 与别名引用都算） */
+    /** 递归收集逻辑树引用到的真实条件键（裸 token 与别名引用都算） */
     private Set<String> collectReferencedKeys(LogicNode node, Map<String, String> aliasMap) {
         Set<String> keys = new LinkedHashSet<>();
         for (Object item : node.getValue()) {
-            if (item instanceof String[] kv) {
-                keys.add(resolveConditionKey(kv[0], aliasMap));
-            } else if (item instanceof String s) {
+            if (item instanceof String s) {
                 keys.add(resolveConditionKey(s, aliasMap));
             } else if (item instanceof LogicNode child) {
                 keys.addAll(collectReferencedKeys(child, aliasMap));
@@ -202,13 +200,7 @@ public class SelectSpecBuilder {
                                           Map<String, String> aliasMap) {
         for (int i = 0; i < node.getValue().size(); i++) {
             Object item = node.getValue().get(i);
-            if (item instanceof String[]) {
-                String[] kv = (String[]) item;
-                // 内联 k=v 的 k 也可以是别名：解析成真实键后再取字段/函数链，值以 lg 为准
-                String realKey = resolveConditionKey(kv[0], aliasMap);
-                FieldCondition cond = buildFieldCondition(Map.of(realKey, (Object) kv[1]), realKey);
-                node.getValue().set(i, cond);
-            } else if (item instanceof String) {
+            if (item instanceof String) {
                 String key = resolveConditionKey((String) item, aliasMap);
                 if (!query.containsKey(key)) {
                     throw new FilamentsError("lg 表达式引用了未知的条件: " + item);
@@ -364,11 +356,15 @@ public class SelectSpecBuilder {
     }
 
     /**
-     * 解析 lg 逻辑表达式为条件树，字符串内容为查询 key 的索引从 0 开始计算。
+     * 解析 lg 逻辑表达式为条件树，token 为查询 key 的引用（从 0 开始计算索引）。
+     * <p>lg 只做参数键的组合逻辑：不支持内联值 {@code k=v}（值只能是字符串、逗号被当分隔符、
+     * 同一条件出现两个值来源），出现即带原文报错；条件值一律走查询参数。
      * <p>括号必须严格配对且只允许一个顶层组：漏右括号时括号内容只积累在 str 里、
      * 永远进不了 value，外层会把这些条件静默降级为顶层 AND（! 的 OR 语义被吞）；
      * 多右括号会 pop 掉 root 后 peek 抛裸 EmptyStackException。两种都在这一步
      * 带位置信息拒绝，绝不带着被改写的语义往下走。
+     * <p>顶层括号外的裸 token（如 {@code a}、{@code a,(b,c)}）与括号内同样进 value，
+     * 多个顶层元素按 AND 组合，不会被静默丢弃。
      *
      * @param input lg 表达式字符串
      * @return 顶层 LogicNode
@@ -405,30 +401,7 @@ public class SelectSpecBuilder {
                 if (stack.size() == 1) {
                     throw new FilamentsError("lg 表达式右括号多余: %s（位置 %d）".formatted(input, i));
                 }
-                Set<String> allChild = new HashSet<>();
-                for (String key : current.str.split(",")) {
-                    if (key.isEmpty()) continue;
-                    if (key.startsWith("?")) {
-                        current.value.add(current.children.get(
-                                logicChildIndex(key, current.children.size())));
-
-                        for (LogicNode child : current.children) {
-                            allChild.addAll(child.allChild);
-                        }
-                    } else if (key.contains("=")) {
-                        int eqIdx = key.indexOf('=');
-                        String k = key.substring(0, eqIdx);
-                        String v = key.substring(eqIdx + 1);
-                        allChild.add(k);
-                        current.value.add(new String[]{k, v});
-                    } else {
-                        // 裸 token：条件键或别名引用（带参数函数链等含保留字符的键只能这样引用），
-                        // 能否解析留到 parseLogicTreeConditions 查表时校验
-                        allChild.add(key);
-                        current.value.add(key);
-                    }
-                }
-                current.allChild = new ArrayList<>(allChild);
+                fillTokens(current, input);
 
                 stack.pop();
                 openPositions.pop();
@@ -449,7 +422,45 @@ public class SelectSpecBuilder {
             throw new FilamentsError("lg 表达式存在多个顶层括号组: %s".formatted(input));
         }
 
-        return root.children.isEmpty() ? root : root.children.get(0);
+        // 顶层括号外的裸 token 与括号内同样处理；不 flush 的话它们只积在 root.str，
+        // root.value 恒空，条件被静默丢弃（条件全写在 lg 里时退化成无条件全表）
+        fillTokens(root, input);
+
+        // 整个表达式就是一个括号组时直接返回该组，省掉多余的外层包裹
+        if (root.children.size() == 1 && root.value.size() == 1
+                && root.value.get(0) == root.children.get(0)) {
+            return root.children.get(0);
+        }
+        return root;
+    }
+
+    /**
+     * 把节点累积的 {@code str} 按逗号切 token 并填进 value/allChild。
+     * <p>{@code ?N} 指向子节点；其余为裸 token（条件键或别名引用），
+     * 能否解析留到 parseLogicTreeConditions 查表时校验。
+     * <p>lg 只表达参数键的组合逻辑：内联值（{@code k=v}）意味着同一条件有两个值来源
+     * 且值只能是字符串（逗号被当分隔符、多值操作符不可用），直接拒绝而不是支持一半。
+     */
+    private void fillTokens(LogicNode node, String input) {
+        Set<String> allChild = new HashSet<>();
+        for (String key : node.str.split(",")) {
+            if (key.isEmpty()) continue;
+            if (key.startsWith("?")) {
+                node.value.add(node.children.get(
+                        logicChildIndex(key, node.children.size())));
+
+                for (LogicNode child : node.children) {
+                    allChild.addAll(child.allChild);
+                }
+            } else if (key.contains("=")) {
+                throw new FilamentsError("lg 表达式不支持内联值（k=v），值请放查询参数: %s（token %s）"
+                        .formatted(input, key));
+            } else {
+                allChild.add(key);
+                node.value.add(key);
+            }
+        }
+        node.allChild = new ArrayList<>(allChild);
     }
 
     public String buildHolder(Object[] value, String splitter) {

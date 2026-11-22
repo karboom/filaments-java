@@ -30,6 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  * │ !(name,age|gt      │ 缺少右括号，带位置报错   │
  * │ name)              │ 右括号多余，带位置报错   │
  * │ (a)(b)             │ 多个顶层括号组报错       │
+ * │ a=1                │ 内联值报错（值走参数）   │
+ * │ name（顶层裸 token）│ 正常进 where，不丢       │
  * └────────────────────┴──────────────────────────┘
  * </pre>
  *
@@ -248,6 +250,21 @@ class SelectSpecBuilderTest {
             assertThatThrownBy(() -> builder.parseLogic("(a)(b)"))
                     .isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("多个顶层括号组");
+        }
+
+        @Test
+        void topLevelBareTokenReachesSpec() {
+            // 回归：顶层裸 token 只积在 root.str 里被丢弃，条件全写在 lg 时退化成全表
+            var spec = builder.parse(new LinkedHashMap<>(Map.of("name", "x", "lg", "name")));
+            var where = spec.getWhere();
+            assertThat(where.getValue()).singleElement().isInstanceOf(FieldCondition.class);
+        }
+
+        @Test
+        void inlineValueRejectedInParse() {
+            assertThatThrownBy(() -> builder.parse(new LinkedHashMap<>(Map.of("lg", "name=x"))))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("不支持内联值");
         }
     }
 
