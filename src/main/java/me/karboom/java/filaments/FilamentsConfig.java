@@ -6,6 +6,7 @@ import lombok.ToString;
 import lombok.With;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.PropertyNamingStrategies;
+import tools.jackson.databind.PropertyNamingStrategy;
 import tools.jackson.databind.cfg.DateTimeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -16,21 +17,23 @@ import java.util.function.UnaryOperator;
 /**
  * 实例配置：命名、分隔符、函数白名单、分页默认值、JSON mapper。
  *
- * <p>不可变：7 项都是 final 字段，改配置只能经 {@code withXxx} 拿到改了一处的新副本。
- * 这不是洁癖——{@link Filaments} 构造期就把 {@link #naming} 的结果物化成列索引与 JSON 字段集，
- * 而渲染、读写路径仍在运行期当场调 {@code naming}。配置一旦允许原地改，同一个实例就会
+ * <p>不可变：字段全部 final，改配置只能经 {@code withXxx} 拿到改了一处的新副本。
+ * 这不是洁癖——{@link Filaments} 构造期就把 {@link #naming()} 的结果物化成列索引与 JSON 字段集，
+ * 而渲染、读写路径仍在运行期当场调 {@code naming()}。配置一旦允许原地改，同一个实例就会
  * 一半按旧名查索引、一半按新名拼 SQL，落到库里的是错数据而不是异常。
  * 已建好的实例要换配置，用新 config 重新建一个。
  *
- * <p>用法：{@code new FilamentsConfig().withNaming(FilamentsConfig::camel)} 传给构造函数
- * （{@code new Filaments<User>("t", config) {...}}）。不显式传的实例各自持有一份内置默认配置；
- * 需要多实例共享配置，就自己持有同一个 config 实例逐个传入——不存在应用级全局配置对象。
+ * <p>用法：{@code new FilamentsConfig()} 即完整可用（naming 派生自 {@link #DEFAULT_MAPPER}，
+ * 效果即 Jackson SNAKE_CASE）。换序列化风格只动 {@code withMapper(m)}（m 自己用
+ * {@code JsonMapper.builder()} 配），派生命名自动跟上——查询用的 jsonb 键与 mapper 写出的键
+ * 同源一致。{@code withNaming(f)} 是显式绑定，{@code withNaming(null)} 退回派生；
+ * 显式规则若含 Jackson 写不出来的改写（前缀等），jsonb 点分查询会静默失配
+ * （{@code #>>} 对不存在的键返回 NULL 而不是报错），一致性转为自担。
+ * 需要多实例共享配置就自己持有同一个 config 实例逐个传入——不存在应用级全局配置对象。
  *
- * <p>命名规则就是 {@link #naming} 一个函数字段（列名与 jsonb 路径段共用，
- * 假设一个系统内风格统一），默认 {@link #snake}；可整体换成 {@link #camel} /
- * {@link #lower} / {@link #asIs}，也可组合出自定义规则
- * （如加表前缀：{@code s -> "t_" + FilamentsConfig.snake(s)}）。
- * 只影响"名字怎么拼"，不影响存量数据：换规则前请确认库里列名 / jsonb 键名形态。
+ * <p>列名与 jsonb 路径段共用 {@link #naming()} 一个函数（假设一个系统内风格统一）。
+ * {@link #snake} / {@link #camel} / {@link #lower} / {@link #asIs} 与自组合规则只作显式绑定备选；
+ * 换规则只影响"名字怎么拼"，不影响存量数据：换之前请确认库里列名 / jsonb 键名形态。
  */
 @With
 @ToString
@@ -111,12 +114,14 @@ public final class FilamentsConfig {
             .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
             .build();
 
+    // region 字段
+
     /**
-     * 统一命名函数：模型字段名 -> 数据库列名（rt / od / 分组 / where 条件键 / 主键 / 聚合别名），
-     * 同时也是 jsonb 查询路径段（{@code extra.xxx} 的 xxx）的改写规则。
-     * 前提假设：一个系统内列名与 JSON 键用同一种风格；序列化侧的键风格由 {@link #mapper} 决定，需配对设置。
+     * 用户对 naming 的显式绑定，可为 null（null = 由 {@link #mapper} 派生）。
+     * 私有且经 {@link #naming()} 访问：生效值与 mapper 有联动，
+     * 谁绕过访问方法直接用这个字段，谁就要自己承担"拿到未绑定的 null"或"mapper 换了名字没换"。
      */
-    public final UnaryOperator<String> naming;
+    private final UnaryOperator<String> naming;
 
     /**
      * 查询语法里的名字分隔符：{@code 字段|函数(参数)|操作符}。
@@ -157,26 +162,42 @@ public final class FilamentsConfig {
 
     /**
      * 所有 JSON 读写（jsonb 字段编解码 + 结果行映射）共用的唯一 mapper。
-     * 换序列化风格时自行用 JsonMapper.builder() 配一个，并与 {@link #naming} 配对；
-     * 务必保留 disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)，参考 {@link #DEFAULT_MAPPER}。
+     * <p>换序列化风格时自行用 {@code JsonMapper.builder()} 配一个传入 {@code withMapper}，
+     * 务必保留 {@code disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)}，
+     * 参考 {@link #DEFAULT_MAPPER}；未经 {@link #naming} 显式绑定时，命名随之自动重派生。
      */
     public final ObjectMapper mapper;
+
+    // endregion
+
+    /**
+     * 生效的命名函数：模型字段名 -> 数据库列名（rt / od / 分组 / where 条件键 / 主键 / 聚合别名），
+     * 同时也是 jsonb 查询路径段（{@code extra.xxx} 的 xxx）的改写规则。
+     * <p>未显式绑定时按当前 mapper 现派生（{@link #namingFrom}），所以 {@code withMapper}
+     * 不需要任何联动代码——联动住在"读取时解析"里，而不是住在 wither 里。
+     * 派生只是两次 getter 加一个 lambda 包装，相对一次 SQL 渲染可忽略。
+     * <p>前提假设不变：一个系统内列名与 JSON 键用同一种风格。
+     */
+    public UnaryOperator<String> naming() {
+        return naming != null ? naming : namingFrom(mapper);
+    }
 
     // region 构造（默认值 + withXxx 的唯一出口）
 
     /**
-     * 内置默认配置：{@link #snake} 命名、{@code |} 与 {@code ::} 分隔符、{@link #PG_FUNCS}、
-     * 页 1 / 页大小 20、{@link #DEFAULT_MAPPER}。要改任何一项请走 {@code withXxx} 取新副本。
+     * 内置默认配置：naming 派生自 {@link #DEFAULT_MAPPER}（Jackson SNAKE_CASE）、
+     * {@code |} 与 {@code ::} 分隔符、{@link #PG_FUNCS}、页 1 / 页大小 20。
+     * 要改任何一项请走 {@code withXxx} 取新副本。
      */
     public FilamentsConfig() {
-        this(FilamentsConfig::snake, DEFAULT_NAME_SPLITTER, DEFAULT_ALIAS_SPLITTER,
+        this(null, DEFAULT_NAME_SPLITTER, DEFAULT_ALIAS_SPLITTER,
                 PG_FUNCS, 1L, 20L, DEFAULT_MAPPER);
     }
 
     /**
-     * 全参构造：7 个 {@code withXxx} 复制副本时汇聚到这唯一一处，字段定型也在这里。
-     * <p>入参顺序与字段声明顺序一致（Lombok 的 {@code @With} 按此顺序回传）。
-     * 白名单表做 {@code List.copyOf}：调用方之后再改自己那个 List 影响不到已建好的配置；
+     * 全参构造：Lombok {@code @With} 的 7 个 wither 复制副本时汇聚到这唯一一处，字段定型也在这里。
+     * <p>入参顺序与字段声明顺序一致（Lombok 按此顺序回传）；naming 参数即显式绑定，可为 null。
+     * <p>白名单表做 {@code List.copyOf}：调用方之后再改自己那个 List 影响不到已建好的配置；
      * {@code List.of} 产出的表原样返回同一实例，默认值不额外分配。
      */
     private FilamentsConfig(UnaryOperator<String> naming, String nameSplitter, String aliasSplitter,
@@ -192,24 +213,46 @@ public final class FilamentsConfig {
 
     // endregion
 
-    // region 命名备选实现（幂等：输入已是目标风格时结果不变，camel 除外按 hutool 语义）
+    // region 命名派生与备选实现
 
-    /** 驼峰转小写下划线：wechatId -> wechat_id；连续大写同样降格（userID -> user_id，USER -> user） */
+    /**
+     * 从 mapper 的 PropertyNamingStrategy 派生命名函数。
+     * <p>动机：jsonb 列"写进去的键"由 mapper 决定、"查询用的键"由 naming 决定，
+     * 两个独立旋钮一旦漂移（如 naming 带前缀而 Jackson 策略表达不了前缀），
+     * 点分查询会静默失配（{@code #>>} 对缺失键返回 NULL）。让查询侧调<b>同一个</b>策略对象，
+     * 漂移在结构上不可能发生，Jackson 与 hutool 的边角差异（如 {@code userID}）也一并消失。
+     * <p>流程：读 {@code mapper.serializationConfig().getPropertyNamingStrategy()}——
+     * 未配置策略的 mapper 返回 null（即 Jackson 不改键名），对应 {@link #asIs}；
+     * 否则包一层 {@code nameForField(sc, null, seg)}。
+     * <p>对自定义策略的唯一约束：{@code nameForField} 不得解引用 Annotated member
+     * （此处传 null）——内置策略都只消费名字参数，第三方策略若依赖 member 会在查询渲染期 NPE。
+     */
+    public static UnaryOperator<String> namingFrom(ObjectMapper mapper) {
+        var sc = mapper.serializationConfig();
+        PropertyNamingStrategy strategy = sc.getPropertyNamingStrategy();
+        return strategy == null ? FilamentsConfig::asIs : seg -> strategy.nameForField(sc, null, seg);
+    }
+
+    /**
+     * 驼峰转小写下划线：wechatId -> wechat_id；连续大写同样降格（userID -> user_id，USER -> user）。
+     * 备选命名实现（幂等：输入已是目标风格时结果不变，camel 除外按 hutool 语义），
+     * 仅作显式绑定 {@code withNaming} 的备选；默认命名走 {@link #namingFrom}，不经过这里。
+     */
     public static String snake(String fieldName) {
         return StrUtil.toUnderlineCase(fieldName).toLowerCase(Locale.ROOT);
     }
 
-    /** 下划线转小驼峰：wechat_id -> wechatId（对已是驼峰的输入幂等） */
+    /** 下划线转小驼峰：wechat_id -> wechatId（对已是驼峰的输入幂等）；用途见 {@link #snake} */
     public static String camel(String fieldName) {
         return StrUtil.toCamelCase(fieldName);
     }
 
-    /** 只转小写，不插下划线：wechatId -> wechatid */
+    /** 只转小写，不插下划线：wechatId -> wechatid；用途见 {@link #snake} */
     public static String lower(String fieldName) {
         return fieldName.toLowerCase(Locale.ROOT);
     }
 
-    /** 逐字使用，不做任何改写 */
+    /** 逐字使用，不做任何改写；用途见 {@link #snake} */
     public static String asIs(String fieldName) {
         return fieldName;
     }
