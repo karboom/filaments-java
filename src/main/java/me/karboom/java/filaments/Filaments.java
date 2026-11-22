@@ -57,8 +57,9 @@ public abstract class Filaments<T> {
     /**
      * 应按 JSON 存取的字段（归一化列名集合），构造期按声明类型分类：
      * 即 {@link #isJsonType} 判真的字段（POJO/List/Map/数组）。
-     * 写侧（create/update）据此序列化，读侧 rt 投影据此补 JSONB 类型；
+     * 写侧（create/update）据此序列化，读侧取值阶梯据此走 JSON 文本反序列化；
      * 声明为 Object 的字段在构造期直接拒绝——存成标量还是 JSON 说不清，必须用具体类型。
+     * jOOQ 自有 {@code JSON}/{@code JSONB} 同样在构造期拒绝（见 {@link #Filaments(String, String, FilamentsConfig)}）。
      */
     private final Set<String> jsonFields;
 
@@ -83,13 +84,12 @@ public abstract class Filaments<T> {
     /**
      * 构造期划分 {@link #jsonFields} 的谓词：除 String/数字包装/时间/UUID/byte[]、
      * 枚举、{@code java.util/sql} 日期之外的类型（POJO、集合、Map、数组）按 JSON 字段对待。
-     * 基本类型（int、long 等）不在普通值之列——模型请用封装类；Object 声明已在构造期拒绝。
+     * 基本类型（int、long 等）不在普通值之列——模型请用封装类。
+     * Object 与 jOOQ {@code JSON}/{@code JSONB} 声明已在构造期拒绝，到不了这个谓词。
      */
     static boolean isJsonType(Class<?> type) {
         if (type.isEnum() || type == java.util.Date.class || type == java.sql.Timestamp.class
-                || type == java.sql.Time.class || type == java.sql.Date.class
-                || type == org.jooq.JSON.class || type == org.jooq.JSONB.class) {
-            // jOOQ JSON/JSONB 是可直接绑定的值，不算 JSON 字段——否则会被二次序列化变味
+                || type == java.sql.Time.class || type == java.sql.Date.class) {
             return false;
         }
         return !Set.of(String.class, Boolean.class, Character.class, Byte.class,
@@ -139,6 +139,14 @@ public abstract class Filaments<T> {
             }
             if (rf.getType() == Object.class) {
                 throw new FilamentsError("模型字段 " + rf.getName() + " 声明为 Object：jsonb 字段请用具体类型（POJO/List/Map）");
+            }
+            // jOOQ 自有 JSON 类型不做模型字段：写侧它是"原样绑定的值"，读侧投影给 PGobject、
+            // SELECT * 给 JSONB，取值阶梯两条都落不进"可赋值"，Jackson 也构造不出该类型——
+            // 与其让 rt 和不分页读法结果不一致，不如构造期就拒。
+            if (rf.getType() == JSON.class || rf.getType() == JSONB.class) {
+                throw new FilamentsError("模型字段 %s 声明为 %s：jOOQ JSON 类型不支持，jsonb 请用 POJO/List/Map，"
+                        .formatted(rf.getName(), rf.getType().getSimpleName())
+                        + "要裸 JSON 树用 JsonNode（String 只适用于 varchar 存文本的列）");
             }
             var col = config.naming.apply(rf.getName());
             indexed.put(col, rf);
@@ -273,6 +281,8 @@ public abstract class Filaments<T> {
 
     /**
      * 模型字段名 -> 列引用：列名进 jOOQ 的唯一合法通道（标识符，而非 plain SQL 拼接）。
+     * 入参必须是<b>未归一化</b>的模型字段名；已经跑过 {@code naming} 的名字直接
+     * {@code field(name(col))}，再走本方法就是归一化两次。
      * 列名由 {@link FilamentsConfig#naming} 归一化：默认 {@code snake} 驼峰转下划线并统一小写——
      * hutool 的 toUnderlineCase 不降格连续大写（userID -> user_ID、USER -> USER），而 jOOQ 经
      * name() 加引号是精确匹配，与建表惯用的全小写列名不符会直接报 column does not exist；
@@ -374,7 +384,7 @@ public abstract class Filaments<T> {
      * 模型值 -> 可绑库的值，按构造期的 {@link #jsonFields} 判定，不看运行时值的来历：
      * JSON 字段必为 POJO/集合/Map，直接序列化；
      * 枚举按 {@code name()} 绑定（序列化成带引号的 "\"A\"" 会让 varchar(1) 直接超长）；
-     * 其余标量（含日期、jOOQ JSON/JSONB——其列声明在 {@link #isJsonType} 中已划入非 JSON）原样绑定。
+     * 其余标量（含日期）原样绑定；jOOQ {@code JSON}/{@code JSONB} 声明在构造期即被拒绝，到不了这里。
      */
     @SneakyThrows
     private Object handleJson(String col, Object value) {
@@ -568,17 +578,20 @@ public abstract class Filaments<T> {
     }
 
     /**
-     * rt 通道：指定列显式投影。
-     * JSON 字段（构造期分类）补 JSONB 类型统一取值形态，varchar 存 JSON 文本的列也只是
-     * JSONB.valueOf 包装，无 DB cast 风险；时间列不补类型，doQuery 走列级映射（jOOQ 转换器）。
+     * rt 通道：指定列显式投影。列引用一律不带类型注解：补 {@code JSONB.class} 不改渲染 SQL，
+     * 只改交给取值阶梯的中间形态（{@code PGobject} vs {@code JSONB}），而阶梯对 JSON 字段
+     * 本来就按 {@code String.class} 收原文，两种形态结果相同——形态收敛只做在取值阶梯一处，
+     * 投影侧不再按 {@code jsonFields} 二次判定（那个键与"该列是否 JSON 语义"并不严格重合）。
      * 未指定 rt 时发 SELECT *，列清单由 doQuery 从结果集元数据取（见 doQuery）。
      */
     private void buildSelectFieldsFromSpec(SelectQuery<Record> q, SelectSpec spec) {
         List<String> fields = spec.getSelectFields();
         if (fields != null && !fields.isEmpty()) {
             for (String part : fields) {
+                // naming 只归一化这一次：col 已是列名，直接 field(name(col))，
+                // 不走 columnRef（它内部还会再跑一次 naming，非幂等规则下拼出双重前缀列）
                 var col = config.naming.apply(fieldNameSafe(part));
-                q.addSelect(jsonFields.contains(col) ? field(name(col), JSONB.class) : columnRef(col));
+                q.addSelect(field(name(col)));
             }
         } else {
             q.addSelect(asterisk());
@@ -747,8 +760,9 @@ public abstract class Filaments<T> {
      * 列清单取首行的结果集元数据（{@code record.fields()}），不取 {@code q.getSelect()}——
      * 后者只登记显式 Field，默认投影 {@code SELECT *} 在那里是空的，据此建策略会得到零列空壳对象。
      * 每列按能力阶梯取值：
-     *   1. JSON 字段（{@link #jsonFields}）：文本（JSON/JSONB/String 三形态）经 Jackson readValue，
-     *      已是结构形态的走 convertValue；
+     *   1. JSON 字段（{@link #jsonFields}）：先按 String.class 收原文，再 Jackson readValue——
+     *      驱动裸类型（rt 投影 jsonb 列拿到 PGobject）、元数据形态（SELECT * 拿到 JSONB）、
+     *      varchar 文本三种都在这里收敛成文本，投影侧因此不需要补类型；
      *   2. 时间家族：jOOQ 转换器 record.get(i, type)；util/sql 日期在建策略时即响亮拒绝，
      *      因此空结果集（没有行可建策略）不做这项检查；
      *   3. 运行时值已可赋值：直取；
@@ -796,8 +810,8 @@ public abstract class Filaments<T> {
                     var type = mf.getType();
                     var idx = i;
                     if (jsonFields.contains(fields[i].getName())) {
-                        // 按 String.class 取值：jOOQ 内建转换器把 JSON/JSONB/varchar 统一拆成原始文本，
-                        // 不经过 org.jooq 自有 JSON 类型，再由 Jackson 按模型类型反序列化
+                        // 按 String.class 取值：jOOQ 内建转换器把驱动裸类型（PGobject）、JSONB/JSON、
+                        // varchar 文本统一拆成原始 JSON 文本，再由 Jackson 按模型类型反序列化
                         funcs[idx] = r -> mapper.readValue(r.get(idx, String.class), type);
                     } else if (java.time.temporal.Temporal.class.isAssignableFrom(type)) {
                         funcs[idx] = r -> r.get(idx, type);

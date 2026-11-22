@@ -163,12 +163,33 @@ class FilamentsConfigTest {
 
         @Test
         void prefixedNamingAppliesToColumns() {
+            // 故意用非幂等 naming：每跑一次多一个前缀，任何通道重复归一化都会露出 t_t_，
+            // 内置 snake/camel/lower/asIs 都是幂等的，测不出这类问题
             var config = new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s));
             var filament = new TestFilaments("users", "id", config);
-            var sql = filament.build(using(POSTGRES), Map.of("rt", "name,createTime"))
+            var sql = filament.build(using(POSTGRES), Map.of("rt", "name,createTime,tags"))
                     .getSQL();
-            // rt 通道 naming 被应用两次（见缺陷报告）：t_ 前缀 + snake(create_time) 再加前缀
-            assertThat(sql).contains("\"t_t_name\"").contains("\"t_t_create_time\"");
+            assertAll(
+                    () -> assertThat(sql).contains("\"t_name\"").contains("\"t_create_time\""),
+                    // JSON 字段分支补的是类型不是列名，形态必须和普通列一致
+                    () -> assertThat(sql).contains("\"t_tags\""),
+                    () -> assertThat(sql).doesNotContain("t_t_"));
+        }
+
+        @Test
+        void prefixedNamingIsConsistentAcrossChannels() {
+            // rt / where / od 三条通道必须拼出同一个列名，否则同一张表的读写分裂成两套名字
+            var config = new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s));
+            var filament = new TestFilaments("users", "id", config);
+            var sql = filament.build(using(POSTGRES), Map.of(
+                            "rt", "name",
+                            "name", "x",
+                            "od", "-createTime"))
+                    .getSQL();
+            assertAll(
+                    () -> assertThat(sql).contains("select \"t_name\" from").contains("\"t_name\" = ?"),
+                    () -> assertThat(sql).contains("order by \"t_create_time\" desc"),
+                    () -> assertThat(sql).doesNotContain("t_t_"));
         }
 
         @Test

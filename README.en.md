@@ -187,14 +187,16 @@ var filament = new Filaments<User>("filaments_camel", config) {
 
 > PostgreSQL only: dotted jsonb paths render as `col #>> '{path}'` and `intersect` as `jsonb_path_exists(...)`; swapping the function preset does not make those two channels portable. The connection string must carry **`stringtype=unspecified`** (e.g. `jdbc:postgresql://host:5432/db?stringtype=unspecified`) — JSON fields are bound as JSON text, and without it the driver binds VARCHAR so PostgreSQL rejects `jsonb column = varchar expression`.
 
-Classification happens once, at construction: JSON fields (declared `List` / `Set` / `Map` / POJO) serialize to JSON text on write, everything else is bound as a scalar; reads map columns straight into the model, with no whole-row JSON round trip. A model field declared as `Object` throws at construction — use `Map<String,Object>` or a concrete POJO. Fields are scanned from the model class **itself** (`getDeclaredFields()`), **never from a superclass**: inherited fields are neither written nor read back (silently dropped), so use composition or redeclare them.
+Classification happens once, at construction: JSON fields (declared `List` / `Set` / `Map` / POJO) serialize to JSON text on write, everything else is bound as a scalar; reads map columns straight into the model, with no whole-row JSON round trip. A model field declared as `Object` or as a jOOQ `JSON`/`JSONB` throws at construction — use `Map<String,Object>` / a concrete POJO / `List`, or `JsonNode` when you want the raw tree. Fields are scanned from the model class **itself** (`getDeclaredFields()`), **never from a superclass**: inherited fields are neither written nor read back (silently dropped), so use composition or redeclare them.
 
 | Model field type | Write | Read |
 | --- | --- | --- |
 | `String` / numbers / `BigDecimal` / `java.time.*` / `boolean` / `byte[]` / `UUID` | bound as-is (not JSON-wrapped) | column-level mapping: assignable values set directly, others converted per value (Jackson) or via jOOQ converters (time) |
 | `java.util.Date` / `java.sql.*` time fields | bound as-is | read fails loudly: timestamptz offset semantics cannot land losslessly on these types — switch to `java.time` |
 | enum | stored as `name()` (e.g. `A`) | `A` → enum |
-| `List` / `Set` / `Map` / nested object | serialized as JSON text (decided by declared type, not runtime value) | projections carry JSONB typing (via `rt`) or column metadata, so reads get object/array nodes directly |
+| `List` / `Set` / `Map` / nested object | serialized as JSON text (decided by declared type, not runtime value) | the read ladder first pulls the raw JSON text (`rt` projections and `SELECT *` take the same shape), then Jackson deserializes it |
+| `JsonNode` (raw JSON tree) | same (also classified as a JSON field) | yields `ObjectNode` / `ArrayNode` directly; do **not** type a jsonb column as `String` — scalars take no part in JSON classification and the read fails loudly, keep raw text in `varchar` |
+| jOOQ `JSON` / `JSONB` | — | rejected at construction: the read side hands back the driver's raw type or `JSONB` depending on the channel, neither of which lands on the model |
 
 > JSON-ness is decided entirely at construction — no runtime string sniffing, so a text column whose value happens to start with `{` or `[` is read back verbatim instead of failing the query.
 >

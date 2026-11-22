@@ -186,14 +186,16 @@ var filament = new Filaments<User>("filaments_camel", config) {
 
 > 仅支持 PostgreSQL：点分 jsonb 路径渲染成 `col #>> '{path}'`，`intersect` 渲染成 `jsonb_path_exists(...)`，换函数白名单预设不会让这两条通道变得可移植。连接串须带 **`stringtype=unspecified`**（如 `jdbc:postgresql://host:5432/db?stringtype=unspecified`）：JSON 字段以 JSON 文本绑定，缺了它驱动按 VARCHAR 传参，PG 会拒 `jsonb 列 = varchar 表达式`。
 
-构造期按声明类型把字段分成 JSON / 非 JSON 两类：写侧 JSON 字段序列化成 JSON 文本、其余原样绑定；读侧（`doQuery`）按列直接映射进对象，没有"整行转 JSON 再解析"的往返。模型字段禁止声明为 `Object`（构造期抛错）：jsonb 请用 `Map<String,Object>` 或具体 POJO。字段只扫模型类**自身**的 `getDeclaredFields()`，**不含父类字段**——继承来的字段既不写库也不读回（静默丢弃），公共字段请用组合或在模型类里显式声明。
+构造期按声明类型把字段分成 JSON / 非 JSON 两类：写侧 JSON 字段序列化成 JSON 文本、其余原样绑定；读侧（`doQuery`）按列直接映射进对象，没有"整行转 JSON 再解析"的往返。模型字段禁止声明为 `Object` 或 jOOQ 的 `JSON`/`JSONB`（构造期抛错）：jsonb 请用 `Map<String,Object>` / POJO / `List`，要整棵裸 JSON 树就用 `JsonNode`。字段只扫模型类**自身**的 `getDeclaredFields()`，**不含父类字段**——继承来的字段既不写库也不读回（静默丢弃），公共字段请用组合或在模型类里显式声明。
 
 | 模型字段类型 | 写入 | 读取 |
 | --- | --- | --- |
 | `String` / 数字 / `BigDecimal` / `java.time.*` / `boolean` / `byte[]` / `UUID` | 原样绑定（不套 JSON） | 列级映射：可赋值直取，否则 Jackson/jOOQ 单值转换；时间列走 jOOQ 转换器 |
 | `java.util.Date` / `java.sql.*` 时间字段 | 原样绑定 | 读取时响亮报错（timestamptz 的 offset 语义无法无损落到这些类型，请改用 `java.time`） |
 | 枚举 | 存 `name()`（如 `A`） | `A` → 枚举 |
-| `List` / `Set` / `Map` / 嵌套对象 | 序列化成 JSON 文本（按声明类型判定，不看运行时值） | 投影带 JSONB 类型/元数据，直接得到对象/数组节点 |
+| `List` / `Set` / `Map` / 嵌套对象 | 序列化成 JSON 文本（按声明类型判定，不看运行时值） | 取值阶梯先按 String 收 JSON 原文（`rt` 投影与 `SELECT *` 同形），再交 Jackson 反序列化成对象/数组 |
+| `JsonNode`（裸 JSON 树） | 同上（也算 JSON 字段） | 直接得到 `ObjectNode` / `ArrayNode`；**不要**用 `String` 接 jsonb 列——标量声明不参与 JSON 分类，读取会响亮报错，裸文本请存 `varchar` |
+| jOOQ `JSON` / `JSONB` | — | 构造期直接拒绝：读侧两条通道给的是驱动裸类型与 `JSONB` 两种形态，落不进模型 |
 
 > JSON 与否完全由构造期分类决定，不做字符串嗅探：文本列里恰好以 `{`、`[` 开头的值始终原样读出。
 >

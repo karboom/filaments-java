@@ -2,6 +2,7 @@ package me.karboom.java.filaments;
 
 import am.ik.yavi.builder.ValidatorBuilder;
 import me.karboom.java.filaments.model.Address;
+import me.karboom.java.filaments.model.BadJooqJsonUser;
 import me.karboom.java.filaments.model.BadObjectUser;
 import me.karboom.java.filaments.model.UserEnum;
 import me.karboom.java.filaments.model.WithStatic;
@@ -34,7 +35,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * │ 枚举              │ UserEnum               │ false      │ 否           │
  * │ java.time        │ OffsetDateTime/LocalDate │ false     │ 否           │
  * │ util/sql 日期     │ java.util.Date/Timestamp │ false     │ 否（读侧另拒）│
- * │ jOOQ JSON/JSONB  │ JSON / JSONB           │ false      │ 否（防二次序列化）│
  * │ UUID / byte[]    │ UUID / byte[]          │ false      │ 否           │
  * │ POJO             │ Address                │ true       │ 是           │
  * │ List / Map       │ List<String>           │ true       │ 是           │
@@ -42,8 +42,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * │ 基本类型 int      │ int                    │ true(现状) │ 模型应使用封装类 │
  * │ static 字段      │ MODEL_TAG              │ 跳过       │ 跳过         │
  * │ Object 字段      │ extra                  │ —          │ 构造期抛 FilamentsError │
+ * │ jOOQ JSON/JSONB  │ JSONB / JSON           │ —          │ 构造期抛 FilamentsError │
  * └──────────────────┴────────────────────────┴────────────┴──────────────┘
- * 异常路径：Object 声明字段 -> FilamentsError("声明为 Object")
+ * 异常路径：Object 声明 -> "声明为 Object"；jOOQ JSONB/JSON 声明 -> "jOOQ JSON 类型不支持"
  * </pre>
  */
 @Timeout(5)
@@ -61,7 +62,7 @@ class ConstructorTest {
                     BigDecimal.class, java.math.BigInteger.class, byte[].class, UUID.class,
                     LocalDate.class, OffsetDateTime.class, java.time.Instant.class,
                     java.util.Date.class, java.sql.Timestamp.class, java.sql.Time.class, java.sql.Date.class,
-                    org.jooq.JSON.class, org.jooq.JSONB.class, UserEnum.class);
+                    UserEnum.class);
             assertThat(notJson).noneMatch(Filaments::isJsonType);
         }
 
@@ -133,6 +134,20 @@ class ConstructorTest {
                 }
             }).isInstanceOf(FilamentsError.class)
                     .hasMessageContaining("声明为 Object");
+        }
+
+        // 两个 jOOQ JSON 类型各测一个字段：读侧对它们是"投影给 PGobject、SELECT * 给 JSONB"，
+        // 两条通道形态不同且都落不进取值阶梯，所以宁可在构造期拒掉，不留静默分叉
+        @Test
+        void jooqJsonTypesRejectedAtConstruction() {
+            assertThatThrownBy(() -> new Filaments<BadJooqJsonUser>("whatever") {
+                @Override
+                public ValidatorBuilder<BadJooqJsonUser> initValidator() {
+                    return new ValidatorBuilder<>();
+                }
+            }).isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("声明为 JSONB")
+                    .hasMessageContaining("jOOQ JSON 类型不支持");
         }
 
         @Test
