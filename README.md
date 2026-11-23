@@ -143,19 +143,28 @@ var users = filaments.get(db, new HashMap<>() {{
 | `in` / `notIn` / `intersect` | 不限 | 按 `,` 拆成多个值（`?id&#124;in=1,2`） |
 | `between` / `notBetween` | 恰好 2 | 按 `,` 拆；拆出来不是两个就抛错 |
 | `eq` / `ne` / `gt` / `ge` / `lt` / `le` / `like` / `notLike` | 恰好 1 | **整串作一个值**，逗号只是普通字符 |
-| `isNull` / `isNotNull` | 不取值 | 键上绑什么都忽略（也不计数） |
+| `isNull` / `isNotNull` | 不取值 | 键上绑什么都忽略（也不计数，null 也不例外） |
 
 - 单值操作符不拆逗号，含逗号的 like 模式、JSON 文本、名字直接写就行，无需转义：`?name=张,三`、`?profile={"a":1,"b":2}`。往单值操作符上绑多个值会**抛错**，不会静默只取第一个（jOOQ 对多余绑定值是悄悄丢弃的）。多模式 `like` 请用别名 + `lg`：`l1::name|like=a%`、`l2::name|like=%b`、`lg=(l1,l2)`。
 - 多值操作符里某个元素本身含逗号时传 `List` / `Set`（逐元素取值，内部逗号不拆）：`Map.of("name|in", List.of("张,三", "user-2"))`。`"a,b"` 是两个值，`List.of("a,b")` 是一个含逗号的值。
+- **值为 `null` 一律抛错，不折算成任何语义。** 只有 `Map`／JSON 入参能把 Java `null` 绑到键上（URL 传不进：`?name=null` 落到 map 里就是字符串 `"null"`，照常匹配文本 `'null'`）。null 绑上去渲染成 `name = ?` + NULL 绑定，三值逻辑下谓词恒不真——`eq` 静默 0 行，`notIn` 连"排除"都变成 0 行，看上去只像"库里没数据"。三条出路各归其位：查空值用 `isNull` / `isNotNull`（不取值，键上绑 null 也不受影响）；匹配文本 `'null'` 就显式传字符串；"这个条件不生效"请在拼 map 时干脆不要放这个键。多值操作符里某个元素为 null 同样抛错，消息指到第几个。
 - 拆不拆、要几个都在**渲染期**决定，解析期一个元素都不动——`SelectSpec` / `toTreeString()` 里 `values` 永远只有一个元素，就是键上绑的那个东西本身。
 
 ### 命名与配置
 
-所有可调项都在 `FilamentsConfig` 上（**不可变对象**：改任何一项都用 `withXxx` 取一份新副本；多实例传同一个即等效"全局配置"，不传则各持一份内置默认）。不可变是必需的而非风格：`naming` 既在实例构造期物化成列索引与 JSON 字段集，又在渲染期当场参与拼列名，原地改会让同一个实例的两套名字分裂，写进库的是错数据。已建实例要换配置，用新 config 重建。列名与 jsonb 路径段由**同一个命名函数** `naming` 控制，可整体换成 `snake` / `camel` / `lower` / `asIs`，也可组合出自定义规则：
+所有可调项都在 `FilamentsConfig` 上（字段 public 可写，安全靠**快照约定**兜住：`Filaments` 构造时 `clone` 传入的 config，之后调用方怎么改自己手里那份都影响不到已建实例；多实例传同一个即等效"全局配置"，各拿一份等值副本，不传则各持一份内置默认）。改配置的标准姿势：`clone()` 后赋值几个字段，交给**新建**实例；已建实例要换配置就重建。实例内部那份副本禁止原地改（字段是 protected 就是在堵这条路）：`naming` 既在构造期物化成列索引与 JSON 字段集，又在渲染期当场参与拼列名，原地改会让两套名字分裂，写进库的是错数据。列名与 jsonb 路径段共用同一个命名，生效值在读取时现解析：未绑定时**派生自 `mapper` 的键改写策略**（内置 `DEFAULT_MAPPER` 是 Jackson SNAKE_CASE，效果即 `snake`），"mapper 写进去的键"与"查询用的键"出自同一个策略对象，构造上就对得上。换序列化风格只赋值 `mapper`，命名自动跟上；要解耦才给 `naming` 字段赋值显式绑定（置回 `null` 即恢复派生）：
 
 ```java
-var config = new FilamentsConfig().withNaming(FilamentsConfig::camel);
-// new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s))   // 自定义：统一加表前缀
+// 换序列化风格：只动 mapper，命名自动跟上（列名与 jsonb 键同时切到驼峰）
+var config = new FilamentsConfig();
+config.mapper = JsonMapper.builder()
+        .propertyNamingStrategy(PropertyNamingStrategies.LOWER_CAMEL_CASE)
+        .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+        .build();
+
+// 解耦：显式绑定 naming（snake / camel / lower / asIs 或自组合函数），读写键一致性自此自担——
+// 自组合若含 Jackson 写不出的改写（如统一加前缀），jsonb 点分查询会静默失配
+// config.naming = FilamentsConfig::camel;
 
 var filament = new Filaments<User>("filaments_camel", config) {
     @Override
@@ -163,24 +172,26 @@ var filament = new Filaments<User>("filaments_camel", config) {
 };
 ```
 
-| 函数 | `wechatId` | `userID` | `wechat_id` | JSON 侧对应 Jackson 策略 |
+下表是显式绑定 `naming` 的备选函数；默认命名不在其中，是直接包 mapper 的键策略：
+
+| 函数 | `wechatId` | `userID` | `wechat_id` | 备注 |
 | --- | --- | --- | --- | --- |
-| `snake`（默认） | `wechat_id` | `user_id` | `wechat_id` | `SNAKE_CASE` |
-| `camel` | `wechatId` | `userId` | `wechatId` | `LOWER_CAMEL_CASE` |
+| `snake` | `wechat_id` | `user_id` | `wechat_id` | 与 `DEFAULT_MAPPER`（SNAKE_CASE）的派生效果一致 |
+| `camel` | `wechatId` | `userId` | `wechatId` | hutool 语义，会把下划线拼成驼峰；Jackson 的驼峰策略只做正向改写，不还原下划线输入 |
 | `asIs` | `wechatId` | `userID` | `wechat_id` | 不改写 |
-| `lower` | `wechatid` | `userid` | `wechat_id` | 全小写 |
+| `lower` | `wechatid` | `userid` | `wechat_id` | 只转小写 |
 
 | 配置项 | 默认值 | 作用 |
 | --- | --- | --- |
-| `naming` | `snake` | 作用于条件键、`rt`、`od`、分组字段、主键 `pk`、写侧列名、聚合别名与 jsonb 路径段；不迁移存量数据 |
-| `mapper` | `DEFAULT_MAPPER` | 所有 JSON 读写共用的唯一 Jackson mapper，须与 `naming` 配对 |
+| `naming` | 未绑定（派生自 `mapper`） | 作用于条件键、`rt`、`od`、分组字段、主键 `pk`、写侧列名、聚合别名与 jsonb 路径段；默认按 mapper 键策略现派生，字段赋值显式绑定后与 mapper 解耦，置回 `null` 恢复派生；不迁移存量数据 |
+| `mapper` | `DEFAULT_MAPPER` | 所有 JSON 读写共用的唯一 Jackson mapper；`naming` 未绑定时命名由它的 PropertyNamingStrategy 派生，赋值换 mapper 时自动跟上 |
 | `nameSplitter` | `"\|"` | 查询语法里 `字段\|函数\|操作符` 的分隔符（勿用 `.`，与 jsonb 路径冲突） |
 | `aliasSplitter` | `"::"` | 条件别名寻址分隔符，永不进 SQL |
-| `sqlFuncList` | `PG_FUNCS` | 函数链与聚合函数白名单，用 `withSqlFuncList(...)` 整体换预设或换成自定义列表（建副本时做不可变拷贝，之后再改你自己那个 List 不生效）；操作符 token 是固定集合，不可配置 |
+| `sqlFuncList` | `PG_FUNCS` | 函数链与聚合函数白名单，赋值整体换预设或自定义列表；自定义请交不可变内容（`List.copyOf(...)`）——字段可写时代没有构造期防御拷贝，赋值后再改你自己那个 List 会直接改到生效值；操作符 token 是固定集合，不可配置 |
 | `page` / `pageSize` | 1 / 20 | 分页默认值：`getByPages()` 两键都不传时用它补齐，`get()` 只传其中一个时另一个用它补 |
 
 - 聚合别名由列名派生：`count(wechatId)` → `countWechatId`，`countDistinct(id)` → `countDistinctId`。
-- 自配 `mapper` 时务必保留 `disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)`，否则带 offset 的时间会被静默调到本地时区：`JsonMapper.builder().propertyNamingStrategy(...).disable(...).build()`。
+- 自配 `mapper` 时务必保留 `disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)`，否则带 offset 的时间会被静默调到本地时区：`JsonMapper.builder().propertyNamingStrategy(...).disable(...).build()`。`naming` 未显式绑定过就换 `mapper` 的，命名按新策略现派生，无需手工配对。
 
 ### 类型与 JSON 约定
 
@@ -199,7 +210,7 @@ var filament = new Filaments<User>("filaments_camel", config) {
 
 > JSON 与否完全由构造期分类决定，不做字符串嗅探：文本列里恰好以 `{`、`[` 开头的值始终原样读出。
 >
-> 库里已有的驼峰键 jsonb 在默认 `SNAKE` 下会被静默忽略（读成 null）：给该表配一个 `naming = FilamentsConfig::asIs`（或 `::camel`）的实例即可对上（命名同时改变列名解析，仅适用于整库同风格的表）。`@JsonProperty("originalKey")` 显式命名的键不受策略影响。
+> 库里已有的驼峰键 jsonb 在默认 `DEFAULT_MAPPER`（SNAKE_CASE）下整文档读回是 null、点分查询也静默查不到：给该表配一个 `mapper` 为 camel 策略 mapper 的实例——读写两侧同时对上，命名自动派生跟上（列名解析也随之变成驼峰，仅适用于整库同风格的表；"列 snake + 键驼峰"的混风格库点分通道无解，这是"列名与 JSON 键同风格"假设的边界）。`@JsonProperty("originalKey")` 显式命名的键不走 Jackson 策略，但查询路径段仍过命名，点分寻址这类键需 `naming = FilamentsConfig::asIs` 显式绑定。
 
 ## 校验与空值
 
@@ -270,6 +281,7 @@ var stat = userFilament.aggregation(db,
 
 - **要跑更复杂的 SQL？** 在数据库里建视图；用 `aggregation` 的 `sub`；或在子类里自建方法直接用注入的 `DSLContext`（见[扩展用法](#扩展用法)）。
 - **字段传 null 为什么没触发必填校验？** 见[校验与空值](#校验与空值)：根字段为 null 时约束整条跳过，必填请用列上的 `NOT NULL`。
+- **查询条件传 null 为什么直接抛错？** 见[值的形态](#值的形态)：null 绑进 `= ?` 在 SQL 里恒不真，静默返回 0 行比报错更难查；库不猜意图，判空请用 `isNull` / `isNotNull`，要匹配文本 `'null'` 就传字符串，条件不生效就别把这个键放进 map。写侧（`create` / `updateByIds`）的 null 仍是 SQL NULL，与这里无关。
 - **第一个参数为什么都是 `DSLContext`？** 便于按业务选择连接（主库／从库）与事务上下文。
 
 ## 贡献与许可

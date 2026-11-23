@@ -1,0 +1,109 @@
+---
+title: 命名与配置
+description: FilamentsConfig 的快照约定、naming/mapper 派生，以及类型与 JSON 的读写规则
+---
+
+## 配置的快照约定
+
+所有可调项都在 `FilamentsConfig` 上（字段 public 可写），安全靠**快照约定**兜住：
+`Filaments` 构造时 `clone` 传入的 config，之后调用方怎么改自己手里那份都影响不到已建实例；
+多实例传同一个即等效"全局配置"，各拿一份等值副本，不传则各持一份内置默认。
+
+改配置的标准姿势：`clone()` 后赋值几个字段，交给**新建**实例；已建实例要换配置就重建。
+
+::: danger 实例内部那份副本禁止原地改
+字段是 protected 就是在堵这条路：`naming` 既在构造期物化成列索引与 JSON 字段集，
+又在渲染期当场参与拼列名，原地改会让两套名字分裂，写进库的是错数据。
+:::
+
+## naming 与 mapper 的关系
+
+列名与 jsonb 路径段共用同一个命名，生效值在读取时现解析：未绑定时**派生自 `mapper` 的键改写策略**
+（内置 `DEFAULT_MAPPER` 是 Jackson SNAKE_CASE，效果即 `snake`），"mapper 写进去的键"与"查询用的键"
+出自同一个策略对象，构造上就对得上。
+
+换序列化风格只赋值 `mapper`，命名自动跟上；要解耦才给 `naming` 字段赋值显式绑定（置回 `null` 即恢复派生）。
+
+```java
+// 换序列化风格：只动 mapper，命名自动跟上（列名与 jsonb 键同时切到驼峰）
+var config = new FilamentsConfig();
+config.mapper = JsonMapper.builder()
+        .propertyNamingStrategy(PropertyNamingStrategies.LOWER_CAMEL_CASE)
+        .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+        .build();
+
+// 解耦：显式绑定 naming（snake / camel / lower / asIs 或自组合函数），读写键一致性自此自担——
+// 自组合若含 Jackson 写不出的改写（如统一加前缀），jsonb 点分查询会静默失配
+// config.naming = FilamentsConfig::camel;
+
+var filament = new Filaments<User>("filaments_camel", config) {
+    @Override
+    public ValidatorBuilder<User> initValidator() { ... }
+};
+```
+
+下表是显式绑定 `naming` 的备选函数；默认命名不在其中，是直接包 mapper 的键策略：
+
+| 函数 | `wechatId` | `userID` | `wechat_id` | 备注 |
+| --- | --- | --- | --- | --- |
+| `snake` | `wechat_id` | `user_id` | `wechat_id` | 与 `DEFAULT_MAPPER`（SNAKE_CASE）的派生效果一致 |
+| `camel` | `wechatId` | `userId` | `wechatId` | hutool 语义，会把下划线拼成驼峰；Jackson 的驼峰策略只做正向改写，不还原下划线输入 |
+| `asIs` | `wechatId` | `userID` | `wechat_id` | 不改写 |
+| `lower` | `wechatid` | `userid` | `wechat_id` | 只转小写 |
+
+## 配置项一览
+
+| 配置项 | 默认值 | 作用 |
+| --- | --- | --- |
+| `naming` | 未绑定（派生自 `mapper`） | 作用于条件键、`rt`、`od`、分组字段、主键 `pk`、写侧列名、聚合别名与 jsonb 路径段；默认按 mapper 键策略现派生，字段赋值显式绑定后与 mapper 解耦，置回 `null` 恢复派生；不迁移存量数据 |
+| `mapper` | `DEFAULT_MAPPER` | 所有 JSON 读写共用的唯一 Jackson mapper；`naming` 未绑定时命名由它的 PropertyNamingStrategy 派生，赋值换 mapper 时自动跟上 |
+| `nameSplitter` | &#124; | 条件键内 `字段/函数链/操作符` 的分段符（勿用 `.`，与 jsonb 路径冲突） |
+| `aliasSplitter` | `::` | 条件别名寻址分隔符，永不进 SQL |
+| `sqlFuncList` | `PG_FUNCS` | 函数链与聚合函数白名单，赋值整体换预设或自定义列表；自定义请交不可变内容（`List.copyOf(...)`）——字段可写时代没有构造期防御拷贝，赋值后再改你自己那个 List 会直接改到生效值；操作符 token 是固定集合，不可配置 |
+| `page` / `pageSize` | 1 / 20 | 分页默认值：`getByPages()` 两键都不传时用它补齐，`get()` 只传其中一个时另一个用它补 |
+
+- 聚合别名由列名派生：`count(wechatId)` → `countWechatId`，`countDistinct(id)` → `countDistinctId`。
+- 自配 `mapper` 时务必保留 `disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)`，
+  否则带 offset 的时间会被静默调到本地时区：
+  `JsonMapper.builder().propertyNamingStrategy(...).disable(...).build()`。
+  `naming` 未显式绑定过就换 `mapper` 的，命名按新策略现派生，无需手工配对。
+
+## 类型与 JSON 约定
+
+::: warning 仅支持 PostgreSQL
+点分 jsonb 路径渲染成 `col #>> '{path}'`，`intersect` 渲染成 `jsonb_path_exists(...)`，
+换函数白名单预设不会让这两条通道变得可移植。
+连接串须带 **`stringtype=unspecified`**（如 `jdbc:postgresql://host:5432/db?stringtype=unspecified`）：
+JSON 字段以 JSON 文本绑定，缺了它驱动按 VARCHAR 传参，PG 会拒 `jsonb 列 = varchar 表达式`。
+:::
+
+构造期按声明类型把字段分成 JSON / 非 JSON 两类：写侧 JSON 字段序列化成 JSON 文本、其余原样绑定；
+读侧（`doQuery`）按列直接映射进对象，没有"整行转 JSON 再解析"的往返。
+
+字段只扫模型类**自身**的 `getDeclaredFields()`，**不含父类字段**——继承来的字段既不写库也不读回
+（静默丢弃），公共字段请用组合或在模型类里显式声明。
+
+| 模型字段类型 | 写入 | 读取 |
+| --- | --- | --- |
+| `String` / 数字 / `BigDecimal` / `java.time.*` / `boolean` / `byte[]` / `UUID` | 原样绑定（不套 JSON） | 列级映射：可赋值直取，否则 Jackson/jOOQ 单值转换；时间列走 jOOQ 转换器 |
+| `java.util.Date` / `java.sql.*` 时间字段 | 原样绑定 | 读取时响亮报错（timestamptz 的 offset 语义无法无损落到这些类型，请改用 `java.time`） |
+| 枚举 | 存 `name()`（如 `A`） | `A` → 枚举 |
+| `List` / `Set` / `Map` / 嵌套对象 | 序列化成 JSON 文本（按声明类型判定，不看运行时值） | 取值阶梯先按 String 收 JSON 原文（`rt` 投影与 `SELECT *` 同形），再交 Jackson 反序列化成对象/数组 |
+| `JsonNode`（裸 JSON 树） | 同上（也算 JSON 字段） | 直接得到 `ObjectNode` / `ArrayNode`；**不要**用 `String` 接 jsonb 列——标量声明不参与 JSON 分类，读取会响亮报错，裸文本请存 `varchar` |
+| jOOQ `JSON` / `JSONB` | — | 构造期直接拒绝：读侧两条通道给的是驱动裸类型与 `JSONB` 两种形态，落不进模型 |
+
+::: info
+JSON 与否完全由构造期分类决定，不做字符串嗅探：文本列里恰好以 `{`、`[` 开头的值始终原样读出。
+:::
+
+### 库里已有的驼峰键 jsonb
+
+在默认 `DEFAULT_MAPPER`（SNAKE_CASE）下，整文档读回是 null、点分查询也静默查不到。
+给该表配一个 `mapper` 为 camel 策略的实例即可——读写两侧同时对上，命名自动派生跟上。
+
+两条边界要提前知道：
+
+- 列名解析也随之变成驼峰，仅适用于整库同风格的表；"列 snake + 键驼峰"的混风格库点分通道无解，
+  这是"列名与 JSON 键同风格"假设的边界。
+- `@JsonProperty("originalKey")` 显式命名的键不走 Jackson 策略，但查询路径段仍过命名，
+  点分寻址这类键需 `naming = FilamentsConfig::asIs` 显式绑定。

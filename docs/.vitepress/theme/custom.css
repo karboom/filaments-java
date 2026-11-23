@@ -1,0 +1,25 @@
+/* VitePress 默认主题用 --vp-c-* 驱动配色：只动品牌色与字体栈，不碰布局变量。
+   brand-1 文本/hover 强调、brand-2 悬停、brand-3 按钮底色，浅深两套各自给值。 */
+
+:root {
+  --vp-c-brand-1: #5b21b6;
+  --vp-c-brand-2: #6d28d9;
+  --vp-c-brand-3: #7c3aed;
+  --vp-c-brand-soft: rgba(124, 58, 237, 0.14);
+}
+
+.dark {
+  --vp-c-brand-1: #a78bfa;
+  --vp-c-brand-2: #8b5cf6;
+  --vp-c-brand-3: #6d28d9;
+  --vp-c-brand-soft: rgba(167, 139, 250, 0.16);
+}
+
+/* 正文大量中英混排：西文在前、中文按平台落具体字体，避免中文回退到宋体。
+   选择器跟默认主题的 --vp-font-family-base 保持一致（lang=zh-CN 时生效）。 */
+:root:where(:lang(zh)) {
+  --vp-font-family-base: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto,
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC',
+    ui-sans-serif, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+    'Segoe UI Symbol', 'Noto Color Emoji';
+}

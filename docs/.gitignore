@@ -1,0 +1,9 @@
+node_modules/
+.vitepress/cache/
+.vitepress/dist/
+# 旧 Astro/Starlight 产物与缓存，迁移后不该再出现
+dist/
+.astro/
+.env
+.env.*
+npm-debug.log*

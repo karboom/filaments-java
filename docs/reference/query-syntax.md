@@ -1,0 +1,129 @@
+---
+title: 查询语法
+description: 保留关键字、字段表达式、条件别名、操作符与值的形态
+---
+
+一段查询就是一组 `字段|函数|操作符 = 值` 形式的键值对，通常以 `Map<String, Object>` 传入
+（也等价于 HTTP query string 或 JSON body，便于 LLM 直接生成）。
+
+## 保留关键字
+
+| 字段名称 | 功能 | 默认值 | 查询字符串 | 对应 SQL |
+| --- | --- | --- | --- | --- |
+| `rt` | 指定返回字段（仅列名，不支持 jsonb 路径/下标） | `*` | `?rt=name,age` | `` select `name`, `age` `` |
+| `p` | 指定当前页码 | 1 | `?p=3` | `` limit 20 offset 40 `` |
+| `pc` | 指定页内行数 | 20 | `?pc=18` | `` limit 18 offset 0 `` |
+| `od` | 指定排序规则（`-` 为降序） | 无 | `?od=id,-height` | `` order by `id` asc, `height` desc `` |
+| `pg` | 算不算总数——**只看键在不在，值不参与判断**（仅 `getByPages` 生效） | 不传 | `?pg=1` | `count(*) 不带 limit/offset，行结果才分页` |
+
+::: info 这几件事容易看漏
+- `p` 与 `pc` 各自独立可用，缺的那个取 `config.page` / `config.pageSize` 默认：`?p=3` 就是 `limit 20 offset 40`，
+  `?pc=18` 就是 `limit 18 offset 0`。**两个键都不给时不分页**——`get` 因此仍是全量取数入口，
+  要"永远分页"就用 `getByPages`（它两个键都补默认值）。
+- 这五个键只描述"行结果"，因此只对 `get` / `getByPages` / `getByIds` 生效；`aggregation` 只取其中的条件
+  （含 `lg` / `raw`），同一份 query 直接喂给两者是安全的（分页不会截断 count，投影不会混进 GROUP BY）。
+- `pg` 是"存在即开启"：只要键在就算总数，`pg=0`、`pg=false` 也一样算；不想要 count 就别带这个键。
+- `rt` 每段只当列名（不校验、不认 jsonb 路径与函数链）：库里没有的列由数据库报错，模型没声明的列静默跳过。
+:::
+
+## 字段表达式
+
+```text
+字段名|函数(参数)...|操作符=数值
+```
+
+- 字段名须为合法标识符（点分路径如 `data.type` 逐段校验）；函数须命中白名单 `FilamentsConfig.sqlFuncList`
+  （默认 `PG_FUNCS`，另有 `MYSQL_FUNCS` / `SQLSERVER_FUNCS`），参数仅支持数字字面量；违反即抛错。
+- `|` 是**同一个键内**的分段符，不是"或"：`name|lower|like` 是一个条件 `lower(name) like ?`，
+  只有末段命中操作符表时才是操作符，其余段都是函数链。OR / AND 走 `lg`（`(a,b)`、`!(a,b)`，
+  `!` 只是把括号组标成 OR 连接，不做逻辑取反）；取反只存在于谓词级——用 `ne` / `notIn` / `notBetween` /
+  `notLike` / `isNotNull`，整组 NOT 暂不支持。
+- 名字一律经 `config.naming` 归一化（默认驼峰 → 小写下划线，`userID` → `user_id`），写驼峰或写库里的下划线名
+  都指向同一列。点分路径的**段 0 按列名规则**、其后按 JSON 键规则，故 `extra.totalCount` 与 `extra.total_count`
+  命中同一个键；数组下标 `data[0].type` 与 `data.0.type` 等价（括号内只接受纯整数）。
+  详见[命名与配置](naming-and-config.md)。
+
+| 查询字符串 | 对应 SQL |
+| --- | --- |
+| `?type=dog` | `` where `type` = 'dog' `` |
+| ?type&#124;in=dog,cat | `` where `type` in ('dog', 'cat') `` |
+| ?type&#124;substr(1,2)&#124;in=dog,cat | `` where substr(`type`, 1, 2) in ('dog', 'cat') `` |
+| ?type&#124;lower&#124;substr(1,2)&#124;in=dog,cat | `` where substr(lower(`type`), 1, 2) in ('dog', 'cat') `` |
+| `?data.type=dog` | `` where `data` #>> '{type}' = 'dog' `` |
+| `?data[0].type=cat` | `` where `data` #>> '{0,type}' = 'cat' `` |
+| `?data[0]=dog` | `` where `data` #>> '{0}' = 'dog' `` |
+
+### 条件别名
+
+`lg` 表达式里 `(` `)` `!` `,` `=` 全是保留字符，而函数链键（`extra.age|substr(1,2)|ge`）自带括号和逗号；
+同时 Map 的键必须唯一，同一表达式需要出现两次（不同值或不同操作符）时会互相覆盖。
+因此条件键可加前缀 `别名::字段|函数链|操作符`，`lg` 里只写短别名，值仍留在参数中：
+
+```java
+var users = filaments.get(db, new HashMap<>() {{
+    put("lowAge::extra.age|substr(1,2)|ge", "5");   // substr(extra #>> '{age}', 1, 2) >= 5
+    put("highAge::extra.age|substr(3,4)|le", "10"); // 同字段不同函数链
+    put("dup1::name|lower", "ann");                 // 同一表达式出现两次（隐式 EQ）
+    put("dup2::name|lower", "bob");
+    put("lg", "(!(lowAge,highAge),dup1,dup2)");     // (lowAge OR highAge) AND dup1 AND dup2
+}});
+```
+
+::: info
+`lg` 只做参数键的组合逻辑：token 是条件键或别名引用，值一律留在查询参数里，写内联值（`k=v`）直接抛错。
+顶层括号组可以带裸 token（`a`、`a,(b,c)` 都合法，并列元素按 AND 组合）；没有分隔符的并置括号组（`(a)(b)`）抛错。
+别名须为合法标识符且不得重复，引用不存在的别名抛错。别名只用于参数寻址，永不参与 SQL 拼接。
+:::
+
+## 操作符
+
+操作符 token 精确匹配且区分大小写；末段不在表中时按「隐式 `eq` + 函数链末段」处理，
+所以拼错的操作符会被函数白名单拒掉，而不是静默改变语义。
+
+| 查询字符串 | 对应 SQL |
+| --- | --- |
+| ?id&#124;ne=1 | `` where `id` <> 1 `` |
+| ?id&#124;gt=1 | `` where `id` > 1 `` |
+| ?id&#124;ge=1 | `` where `id` >= 1 `` |
+| ?id&#124;lt=1 | `` where `id` < 1 `` |
+| ?id&#124;le=1 | `` where `id` <= 1 `` |
+| ?id&#124;in=1,2 | `` where `id` in (1, 2) `` |
+| ?id&#124;notIn=1,2 | `` where `id` not in (1, 2) `` |
+| ?id&#124;between=1,2 | `` where `id` between 1 and 2 `` |
+| ?id&#124;notBetween=1,2 | `` where `id` not between 1 and 2 `` |
+| ?id&#124;like=k% | `` where `id` like 'k%' `` |
+| ?id&#124;notLike=k% | `` where `id` not like 'k%' `` |
+| ?tags&#124;intersect=a | `` where jsonb_path_exists(`tags`, '$[*] ? (@ == $q0)', ...) `` |
+| ?name&#124;isNull= | `` where `name` is null `` |
+| ?name&#124;isNotNull= | `` where `name` is not null `` |
+
+::: info
+`isNull` / `isNotNull` 不取参数（键上绑什么都忽略，谓词没有比较对象），也可接在函数链后
+（`extra.age|substr(1,2)|isNull`）；两者互为反义，取反就是换成 `isNotNull`——`lg` 里的 `!(...)`
+只是 OR 连接标记，不会渲染成 NOT。
+:::
+
+## 值的形态
+
+值全部走占位符绑定，永不进 SQL 文本；「一个键上绑几个值」由操作符决定——逗号只在天生多值的地方才是分隔符：
+
+| 操作符 | 值个数 | String 怎么解释 |
+| --- | --- | --- |
+| `in` / `notIn` / `intersect` | 不限 | 按 `,` 拆成多个值（?id&#124;in=1,2） |
+| `between` / `notBetween` | 恰好 2 | 按 `,` 拆；拆出来不是两个就抛错 |
+| `eq` / `ne` / `gt` / `ge` / `lt` / `le` / `like` / `notLike` | 恰好 1 | **整串作一个值**，逗号只是普通字符 |
+| `isNull` / `isNotNull` | 不取值 | 键上绑什么都忽略（也不计数，null 也不例外） |
+
+- 单值操作符不拆逗号，含逗号的 like 模式、JSON 文本、名字直接写就行，无需转义：`?name=张,三`、
+  `?profile={"a":1,"b":2}`。往单值操作符上绑多个值会**抛错**，不会静默只取第一个（jOOQ 对多余绑定值是悄悄丢弃的）。
+  多模式 `like` 请用别名 + `lg`：`l1::name|like=a%`、`l2::name|like=%b`、`lg=(l1,l2)`。
+- 多值操作符里某个元素本身含逗号时传 `List` / `Set`（逐元素取值，内部逗号不拆）：
+  `Map.of("name|in", List.of("张,三", "user-2"))`。`"a,b"` 是两个值，`List.of("a,b")` 是一个含逗号的值。
+- **值为 `null` 一律抛错，不折算成任何语义。** 只有 `Map`／JSON 入参能把 Java `null` 绑到键上
+  （URL 传不进：`?name=null` 落到 map 里就是字符串 `"null"`，照常匹配文本 `'null'`）。null 绑上去渲染成
+  `name = ?` + NULL 绑定，三值逻辑下谓词恒不真——`eq` 静默 0 行，`notIn` 连"排除"都变成 0 行，
+  看上去只像"库里没数据"。三条出路各归其位：查空值用 `isNull` / `isNotNull`（不取值，键上绑 null 也不受影响）；
+  匹配文本 `'null'` 就显式传字符串；"这个条件不生效"请在拼 map 时干脆不要放这个键。
+  多值操作符里某个元素为 null 同样抛错，消息指到第几个。
+- 拆不拆、要几个都在**渲染期**决定，解析期一个元素都不动——`SelectSpec` / `toTreeString()` 里 `values`
+  永远只有一个元素，就是键上绑的那个东西本身。

@@ -1,0 +1,5 @@
+# 允许所有抓取器；文档站不需要屏蔽
+User-agent: *
+Allow: /
+
+Sitemap: http://localhost:4321/sitemap.xml

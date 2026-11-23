@@ -1,0 +1,71 @@
+---
+title: 扩展用法
+description: 子查询、原生 SQL、自建入口，以及模型类型的泛型解析约束
+---
+
+需要子查询或原生 SQL 时，继承 `Filaments` 自建入口——`buildSelect` / `buildBase` / `doQuery`
+都是 protected，自由组合即可。
+
+```java
+public class UserFilaments extends Filaments<User> {
+    public UserFilaments() {
+        super("user");
+    }
+
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+
+    // 带子查询的行查询：用 protected 的 buildSelect + doQuery 自由组合（get 没有 sub 重载）
+    public List<User> getWithSub(DSLContext db, Map<String, Object> query, SelectQuery<Record> sub) {
+        return doQuery(buildSelect(db, query, sub), false);
+    }
+
+    // 需要时随时落回原生 jOOQ
+    public List<Record> getByOrgId(DSLContext db, Long orgId) {
+        return db.select().from(table("user")).where(field("org_id").eq(orgId)).fetch();
+    }
+}
+```
+
+## 聚合与子查询
+
+`aggregation` 自带 `sub` 参数（传 `null` 即普通表）：
+
+```java
+var stat = userFilament.aggregation(db,
+        Map.of("count", "id"),      // 聚合目标：聚合函数 -> 字段
+        Map.of("role", "admin"),    // 筛选条件（同查询字符串语法）
+        List.of("type"),            // 分组字段
+        buildMySubQuery(db));       // 子查询
+```
+
+:::note
+`target` 与 `group` 不能同时为空：无投影语义的聚合等于放开一条无上限的全表整行扫描，
+库直接抛 `FilamentsError`（这是为 LLM 生成的调用兜底——漏传或拼错 `target` 时宁可报错）。
+`group` 非空时 `select group_cols … group by …` 行数有界，属合法查询。
+:::
+
+## 钩子
+
+| 钩子 | 时机 | 用途 |
+| --- | --- | --- |
+| `before(T data)` | 写库前 | 补默认值、派生字段、jsonb 内部键必填自查 |
+| `after(T data)` | 读回后 | 二次加工返回值 |
+| `initValidator()` | 构造期 | 返回 yavi 校验器，见[校验与空值](/reference/validation/) |
+
+## 模型类型的解析约束
+
+:::caution[泛型中间层不支持]
+模型类型取自父类链上唯一那处 `extends Filaments<模型类>` 的泛型实参：从具体子类再派生、用匿名子类都可以，
+但链上的中间基类必须是非泛型具体类（`BaseF<T> extends Filaments<T>` 这类泛型中间层在构造期拒绝）。
+:::
+
+## 想跑更复杂的 SQL
+
+三条路，按代价从低到高：
+
+1. 在数据库里建视图，把一个视图当一张表用；
+2. 用 `aggregation` / `buildSelect` 的 `sub` 参数带子查询；
+3. 在子类里自建方法，直接用注入的 `DSLContext` 写原生 jOOQ。

@@ -1,0 +1,69 @@
+---
+title: Filaments Java
+description: 为自然语言与 vibe coding 而生的轻量 Java ORM
+template: splash
+editUrl: false
+hero:
+  tagline: 构建在 jOOQ 之上的轻量 ORM。查询条件是「字段|函数|操作符=值」这样的短字符串，与人类描述需求的语序同构——人好写，LLM 也好生成。
+  actions:
+    - text: 快速开始
+      link: /guide/getting-started/
+      variant: primary
+    - text: 查询语法
+      link: /reference/query-syntax/
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/karboom/filaments-java
+      icon: github
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## 为什么适合自然语言
+
+<CardGrid>
+	<Card title="零翻译成本" icon="rocket">
+		"年龄大于 18 的北京用户，按注册时间倒序" 就是 `age|gt=18`、`city=北京`、`od=-create_time`。
+		`字段 → 操作符 → 值` 与中英文语序同构，比链式 builder API 出错率低得多。
+	</Card>
+	<Card title="参数是数据不是代码" icon="document">
+		条件以 `Map` / JSON 传入，天然适配 Function Calling，也便于服务端校验与回放。
+		复杂逻辑用 `lg` 表达式（`!(a,b)`），`LogicNode#toTreeString()` 打印出来即可自检。
+	</Card>
+	<Card title="接口小、约定强" icon="setting">
+		入口只有 `create / updateByIds / deleteByIds / get / getByPages / getByIds / aggregation`，
+		第一参数统一 `DSLContext`。驼峰自动转下划线、JSON 列自动序列化、`p/pc/pg` 分页，
+		不需要映射配置与样板代码。
+	</Card>
+	<Card title="安全边界清晰" icon="padlock">
+		值全走占位符绑定；字段名/排序键/分组字段逐段过标识符白名单，函数只认
+		`FilamentsConfig.sqlFuncList` 且参数限数字字面量；非法输入抛错而不是拼进 SQL。
+	</Card>
+</CardGrid>
+
+## 三十秒上手
+
+```java
+// 一个实例对应一张表：Filaments 是抽象类，模型类型取自 extends Filaments<User> 的泛型实参
+var userFilament = new Filaments<User>("user") {
+    @Override
+    public ValidatorBuilder<User> initValidator() {
+        return new ValidatorBuilder<>();
+    }
+};
+
+// 年龄是 22 或 23 的用户
+var users = userFilament.get(db, new HashMap<>() {{
+    put("age|in", List.of(22, 23));
+}});
+```
+
+## 下一步
+
+<CardGrid two={true}>
+	<LinkCard title="快速开始" description="依赖坐标、Java/PG 前置要求、第一个实例" href="/guide/getting-started/" />
+	<LinkCard title="查询语法" description="保留关键字、字段表达式、操作符、值的形态" href="/reference/query-syntax/" />
+	<LinkCard title="命名与配置" description="FilamentsConfig、naming/mapper 派生、类型与 JSON 约定" href="/reference/naming-and-config/" />
+	<LinkCard title="校验与空值" description="yavi 校验时机、null 的三条出路、必填交给数据库" href="/reference/validation/" />
+</CardGrid>

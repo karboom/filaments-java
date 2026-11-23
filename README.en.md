@@ -144,19 +144,29 @@ Every value is placeholder-bound and never reaches the SQL text; *how many* valu
 | `in` / `notIn` / `intersect` | any number | split on `,` (`?id&#124;in=1,2`) |
 | `between` / `notBetween` | exactly 2 | split on `,`; anything but two values throws |
 | `eq` / `ne` / `gt` / `ge` / `lt` / `le` / `like` / `notLike` | exactly 1 | **the whole string is one value**; a comma is just a character |
-| `isNull` / `isNotNull` | none | whatever is bound is ignored (and not counted) |
+| `isNull` / `isNotNull` | none | whatever is bound is ignored (and not counted), `null` included |
 
 - Single-value operators never split, so a comma inside a `like` pattern, a JSON text or a name just works: `?name=John, Jr.`, `?profile={"a":1,"b":2}`. Binding several values to one **throws** instead of keeping the first (jOOQ quietly drops surplus bind values, which would mean wrong rows). Several `like` patterns go through aliases + `lg`: `l1::name|like=a%`, `l2::name|like=%b`, `lg=(l1,l2)`.
 - When an element of a multi-valued operator contains a comma, pass a `List` / `Set` — containers are read element by element and inner commas are never split: `Map.of("name|in", List.of("John, Jr.", "user-2"))`. `"a,b"` is two values; `List.of("a,b")` is one value containing a comma.
+- **A `null` value always throws; it is never translated into another meaning.** Only `Map` / JSON inputs can bind a Java `null` to a key — a query string cannot: `?name=null` arrives as the string `"null"` and matches the text `'null'` as usual. A `null` bind renders `name = ?` + NULL, which is never true under SQL's three-valued logic: `eq` silently returns 0 rows and `notIn` turns "exclude" into "return nothing" — it looks exactly like "the table has no such data". The three ways out each stay in their own place: check for NULL with `isNull` / `isNotNull` (they take no value, so a bound `null` is ignored too); match the text `'null'` by passing a string; make a condition "not apply" by not putting that key in the map at all. Inside multi-valued operators a `null` element throws as well, naming the position.
 - Shapes are resolved at **render time** and parsing never touches the value, so `values` inside `SelectSpec` / `LogicNode#toTreeString()` always holds exactly one element — the thing bound to the key itself.
 
 ### Naming and configuration
 
-Everything tunable lives on `FilamentsConfig`, an **immutable object**: change one item with `withXxx` to get a new copy; pass the same instance to several Filaments for application-wide settings, or build none and each instance starts from built-in defaults. Immutability is required, not stylistic: `naming` is materialized into the column index and JSON field set at construction *and* applied live while rendering SQL, so mutating it in place splits one instance across two sets of names and writes wrong data. To reconfigure a built instance, build a new one with a new config. Column names and jsonb path segments share **one naming function** — swap it wholesale for `snake` / `camel` / `lower` / `asIs`, or compose your own:
+Everything tunable lives on `FilamentsConfig` — fields are public and writable, safety rests on a **snapshot convention**: `Filaments` `clone()`s the config it is handed at construction, so whatever the caller mutates afterwards never reaches a built instance; passing the same object to several Filaments is the "application-wide config" (each gets an equal-valued copy), and building none gives each instance the defaults. The way to reconfigure: `clone()`, assign the fields, hand it to a **new** instance — to change a built instance, rebuild it. Mutating the instance's own copy in place is forbidden (the field is `protected` precisely to block that shortcut): `naming` is materialized into the column index and JSON field set at construction *and* applied live while rendering SQL, so in-place edits split one instance across two sets of names and write wrong data. Column names and jsonb path segments share **one naming**; its effective value is resolved at read time: unless bound, it is **derived from the mapper's key strategy** (the built-in `DEFAULT_MAPPER` uses Jackson SNAKE_CASE, so the effect equals `snake`) — the keys the mapper writes and the keys a query addresses come from the same strategy object and match by construction. To change serialization style, assign `mapper` alone and the naming follows; assign the `naming` field only to decouple it (`null` restores derivation):
 
 ```java
-var config = new FilamentsConfig().withNaming(FilamentsConfig::camel);
-// new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s))   // custom rule: uniform table prefix
+// change serialization style: assign only the mapper, the naming follows (columns and jsonb keys go camelCase together)
+var config = new FilamentsConfig();
+config.mapper = JsonMapper.builder()
+        .propertyNamingStrategy(PropertyNamingStrategies.LOWER_CAMEL_CASE)
+        .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+        .build();
+
+// decouple: an explicit naming function (snake / camel / lower / asIs or a composed rule) — read/write key
+// consistency becomes your responsibility: a rule Jackson cannot express on the write side (e.g. a uniform
+// prefix) silently misses every dotted jsonb query
+// config.naming = FilamentsConfig::camel;
 
 var filament = new Filaments<User>("filaments_camel", config) {
     @Override
@@ -164,24 +174,26 @@ var filament = new Filaments<User>("filaments_camel", config) {
 };
 ```
 
-| Function | `wechatId` | `userID` | `wechat_id` | Jackson strategy (JSON side) |
+The table below lists the explicit `naming`-binding candidates; the default naming is not among them — it is a pass-through to the mapper's strategy:
+
+| Function | `wechatId` | `userID` | `wechat_id` | Note |
 | --- | --- | --- | --- | --- |
-| `snake` (default) | `wechat_id` | `user_id` | `wechat_id` | `SNAKE_CASE` |
-| `camel` | `wechatId` | `userId` | `wechatId` | `LOWER_CAMEL_CASE` |
+| `snake` | `wechat_id` | `user_id` | `wechat_id` | matches the default derived from `DEFAULT_MAPPER` (SNAKE_CASE) |
+| `camel` | `wechatId` | `userId` | `wechatId` | hutool semantics, rebuilds camelCase from underscores; Jackson's camel strategies only rewrite forward and leave underscored input verbatim |
 | `asIs` | `wechatId` | `userID` | `wechat_id` | verbatim |
-| `lower` | `wechatid` | `userid` | `wechat_id` | lowercase |
+| `lower` | `wechatid` | `userid` | `wechat_id` | lowercases only |
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `naming` | `snake` | drives condition keys, `rt`, `od`, group fields, `pk`, insert/update column names, aggregation aliases and jsonb path segments; never migrates existing data |
-| `mapper` | `DEFAULT_MAPPER` | the single Jackson mapper used for all JSON read/write; must be paired with `naming` |
+| `naming` | unbound (derived from `mapper`) | drives condition keys, `rt`, `od`, group fields, `pk`, insert/update column names, aggregation aliases and jsonb path segments; derived from the mapper's key strategy at read time unless the field is assigned, assigning decouples it and `null` restores derivation; never migrates existing data |
+| `mapper` | `DEFAULT_MAPPER` | the single Jackson mapper used for all JSON read/write; while `naming` is unbound, assigning a new mapper re-derives the naming from its strategy |
 | `nameSplitter` | `"\|"` | separator of `field\|function\|operator` in query keys (don't use `.` — it collides with jsonb paths) |
 | `aliasSplitter` | `"::"` | condition-alias separator, never reaches SQL |
-| `sqlFuncList` | `PG_FUNCS` (also `MYSQL_FUNCS` / `SQLSERVER_FUNCS`) | function-chain and aggregate whitelist, replaced wholesale via `withSqlFuncList(...)` (copied immutably, so mutating your own list afterwards has no effect); operator tokens are a fixed set and are not configurable |
+| `sqlFuncList` | `PG_FUNCS` (also `MYSQL_FUNCS` / `SQLSERVER_FUNCS`) | function-chain and aggregate whitelist, assigned wholesale; hand over immutable content (`List.copyOf(...)`) — writable fields leave no room for a construction-time defensive copy, so mutating your own list afterwards mutates the effective config; operator tokens are a fixed set and are not configurable |
 | `page` / `pageSize` | 1 / 20 | paging defaults: `getByPages()` fills both when absent, `get()` fills whichever of the two you left out |
 
 - Aggregation aliases derive from the column name: `count(wechatId)` → `countWechatId`, `countDistinct(id)` → `countDistinctId`.
-- Build a custom mapper with `JsonMapper.builder().propertyNamingStrategy(...).disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE).build()` and keep that disable, or offset-bearing times silently shift to the local zone.
+- Build a custom mapper with `JsonMapper.builder().propertyNamingStrategy(...).disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE).build()` and keep that disable, or offset-bearing times silently shift to the local zone. A naming you never bound explicitly re-derives from the new strategy as soon as you assign `mapper` — no manual pairing.
 
 ### Types and JSON
 
@@ -200,7 +212,7 @@ Classification happens once, at construction: JSON fields (declared `List` / `Se
 
 > JSON-ness is decided entirely at construction — no runtime string sniffing, so a text column whose value happens to start with `{` or `[` is read back verbatim instead of failing the query.
 >
-> Pre-existing camelCase jsonb keys (written by another system) read as null under the default `SNAKE`; give that table an instance with `naming = FilamentsConfig::asIs` (or `::camel`) — naming renames columns too, so this fits uniformly camelCase databases. Fields annotated with `@JsonProperty("originalKey")` keep their exact key name.
+> Pre-existing camelCase jsonb keys (written by another system) read as null and match no dotted query path under the default `DEFAULT_MAPPER` (SNAKE_CASE); give that table an instance whose `mapper` is a camelCase-strategy mapper — both channels line up at once and the naming re-derives automatically (column resolution goes camelCase with it, so this fits uniformly camelCase databases; a "snake columns + camel keys" mix has no working dotted-path configuration — that is the limit of the one-style assumption). Keys explicitly named via `@JsonProperty("originalKey")` bypass the Jackson strategy but not the naming applied to query path segments; addressing such keys in dotted paths requires binding `naming = FilamentsConfig::asIs`.
 
 ## Validation and null semantics
 
@@ -271,6 +283,7 @@ var stat = userFilament.aggregation(db,
 
 - **More complex SQL?** Point a Filaments at a database view; pass a hand-built sub-query via `aggregation`'s `sub`; or add a method in a subclass and use the injected `DSLContext` directly (see [Extending](#extending)).
 - **Why didn't a null field trigger my "required" constraint?** Because a constraint whose root field is null is skipped ([Validation and null semantics](#validation-and-null-semantics)) — express "required" with `NOT NULL`.
+- **Why does passing `null` as a condition value throw instead of matching nothing?** A `null` bind is never true under three-valued logic, so a silently empty result page would be indistinguishable from "no such data" — the library refuses to guess which intent you meant ([Value shapes](#value-shapes)): use `isNull` / `isNotNull` for NULL, pass a string for the text `'null'`, omit the key when the condition should not apply. On the write side (`create` / `updateByIds`) a `null` field is still SQL NULL; that is a different layer.
 - **Why is the first argument always `DSLContext`?** So the caller picks the connection per call (primary vs. replica) and controls the transaction context.
 
 ## Contributing & license
