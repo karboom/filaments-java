@@ -26,6 +26,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import static org.jooq.impl.DSL.*;
 
@@ -72,12 +73,13 @@ public abstract class Filaments<T> {
     public final String pk;
 
     /**
-     * 命名等配置。构造期定死，之后不可更换；不传则每个实例各持一份内置默认配置，
-     * 自定义时把 {@code new FilamentsConfig().withXxx(...)} 经构造函数传入
-     * （多实例共享一份就传同一对象）。配置类型本身不可变：原地改会让构造期建好的列索引
-     * 和运行期拼的列名分裂成两套名字，详见 {@link FilamentsConfig}。
+     * 命名等配置。实例持有的是<b>构造期 clone 的副本</b>——调用方之后再改自己手里那份
+     * config 影响不到已建好的实例（快照约定详见 {@link FilamentsConfig}）。
+     * 自定义：{@code FilamentsConfig} 上 {@code clone()} 后赋值，再经构造函数传入。
+     * 之所以不是 public：原地改这份副本会让构造期建好的列索引和运行期拼的列名
+     * 分裂成两套名字——降为 protected 是堵掉"顺手就能改"的路，子类同样禁止改动它。
      */
-    public final FilamentsConfig config;
+    protected final FilamentsConfig config;
 
     // endregion
 
@@ -121,10 +123,11 @@ public abstract class Filaments<T> {
     public Filaments(String table, String pk, FilamentsConfig config) {
         this.table = table;
         this.pk = pk;
-        this.config = config;
+        // 收副本：调用方之后改自己手里的 config 到不了本实例（快照约定，见 FilamentsConfig）
+        this.config = config.clone();
 
         // 构造期就绑好配置，子类直接用 specBuilder 字段也不会拿到 null
-        this.specBuilder = new SelectSpecBuilder(config);
+        this.specBuilder = new SelectSpecBuilder(this.config);
 
         // 模型类型在构造期就定死：raw 写法（extends Filaments）在这里拒，
         // 不留到第一次用 dataClass 才炸——那时报错点和原因已经隔着一整个查询。
@@ -148,7 +151,7 @@ public abstract class Filaments<T> {
                         .formatted(rf.getName(), rf.getType().getSimpleName())
                         + "要裸 JSON 树用 JsonNode（String 只适用于 varchar 存文本的列）");
             }
-            var col = config.naming.apply(rf.getName());
+            var col = config.naming(rf.getName());
             indexed.put(col, rf);
             if (isJsonType(rf.getType())) {
                 json.add(col);
@@ -283,13 +286,13 @@ public abstract class Filaments<T> {
      * 模型字段名 -> 列引用：列名进 jOOQ 的唯一合法通道（标识符，而非 plain SQL 拼接）。
      * 入参必须是<b>未归一化</b>的模型字段名；已经跑过 {@code naming} 的名字直接
      * {@code field(name(col))}，再走本方法就是归一化两次。
-     * 列名由 {@link FilamentsConfig#naming} 归一化：默认 {@code snake} 驼峰转下划线并统一小写——
-     * hutool 的 toUnderlineCase 不降格连续大写（userID -> user_ID、USER -> USER），而 jOOQ 经
-     * name() 加引号是精确匹配，与建表惯用的全小写列名不符会直接报 column does not exist；
-     * 输入已是目标风格时幂等（create_time -> create_time）。
+     * 列名由 {@link FilamentsConfig#naming(String)} 归一化：默认派生自 mapper 键策略（内置为 SNAKE_CASE，
+     * 驼峰转小写下划线、连续大写降格，userID -> user_id；输入已是目标风格时幂等，
+     * create_time -> create_time）。jOOQ 经 name() 加引号是精确匹配，归一化结果与库里列名形态
+     * 对不上会直接报 column does not exist——这正是响亮失败，比静默错数据好。
      */
     private Field<Object> columnRef(String fieldName) {
-        return field(name(config.naming.apply(fieldName)));
+        return field(name(config.naming(fieldName)));
     }
 
     /** 当前表引用 */
@@ -298,25 +301,26 @@ public abstract class Filaments<T> {
     }
 
     /**
-     * 普通列表达式：白名单校验 + config.naming 归一化，以 name() 标识符引用（加引号，非 plain SQL 裸拼）。
+     * 普通列表达式：白名单校验 + {@link FilamentsConfig#naming(String)} 归一化，以 name() 标识符引用（加引号，非 plain SQL 裸拼）。
      */
     private String columnExpr(String fieldName) {
         if (!IDENT_PATTERN.matcher(fieldName).matches()) {
             throw new FilamentsError("非法字段名: " + fieldName);
         }
-        return name(config.naming.apply(fieldName)).toString();
+        return name(config.naming(fieldName)).toString();
     }
 
     /**
      * 点分 jsonb 路径表达式：逐段过标识符白名单（identsSafe），
      * 段 0 按列处理（复用 {@link #columnExpr}），其余段按 JSON 键归一化拼进 {@code #>> '{...}'}；
-     * 数组下标段原样进路径数组（PG 用整型键取元素），对数字跑 naming 依赖 hutool 行为，不做这个假设。
-     * 「写进去的键」与「查询用的键」一致仍需 config.mapper 与 config.naming 配对。
+     * 数组下标段原样进路径数组（PG 用整型键取元素），对数字跑 naming 的结果（派生策略与 hutool 备选函数）不作保证，不做这个假设。
+     * naming 未显式绑定时由 mapper 派生（{@link FilamentsConfig#namingFrom}），读写键同源是构造保证；
+     * 显式绑定（config.naming 槽赋值）后一致性转为自担。
      */
     private String jsonKeyExpr(String fieldName) {
         var segments = identsSafe(fieldName);
         var path = segments.subList(1, segments.size()).stream()
-                .map(seg -> INDEX_PATTERN.matcher(seg).matches() ? seg : config.naming.apply(seg))
+                .map(seg -> INDEX_PATTERN.matcher(seg).matches() ? seg : config.naming(seg))
                 .toList();
         return "%s #>> '{%s}'".formatted(
                 columnExpr(segments.get(0)),
@@ -331,7 +335,7 @@ public abstract class Filaments<T> {
      */
     private String aggAlias(String funcName, String fieldName) {
         var sb = new StringBuilder(funcName);
-        for (var seg : config.naming.apply(fieldNameSafe(fieldName)).split("[._]")) {
+        for (var seg : config.naming(fieldNameSafe(fieldName)).split("[._]")) {
             if (seg.isEmpty()) {
                 continue;
             }
@@ -445,7 +449,7 @@ public abstract class Filaments<T> {
                 if (value == null) {
                     values.add(defaultValue());
                 } else {
-                    values.add(handleJson(config.naming.apply(field.getName()), value));
+                    values.add(handleJson(config.naming(field.getName()), value));
                 }
             }
 
@@ -495,14 +499,14 @@ public abstract class Filaments<T> {
             String name = field.getName();
 
             // 主键不参与更新，避免批量更新时 SET 主键导致冲突（两边都归一化后再比）
-            if (config.naming.apply(name).equals(config.naming.apply(this.pk))) {
+            if (config.naming(name).equals(config.naming(this.pk))) {
                 continue;
             }
 
             var value = field.get(data);
 
             if (value != null) {
-                q.addValue(columnRef(name), handleJson(config.naming.apply(name), value));
+                q.addValue(columnRef(name), handleJson(config.naming(name), value));
             }
         }
         q.addConditions(trueCondition().and(columnRef(this.pk).in(ids)));
@@ -590,7 +594,7 @@ public abstract class Filaments<T> {
             for (String part : fields) {
                 // naming 只归一化这一次：col 已是列名，直接 field(name(col))，
                 // 不走 columnRef（它内部还会再跑一次 naming，非幂等规则下拼出双重前缀列）
-                var col = config.naming.apply(fieldNameSafe(part));
+                var col = config.naming(fieldNameSafe(part));
                 q.addSelect(field(name(col)));
             }
         } else {
@@ -646,23 +650,22 @@ public abstract class Filaments<T> {
      * 多值形态：解析期把「键上绑的那个东西」原样收成一个元素，这里按它的真实类型摊开——
      * 单个 String 是 DSL 简写，按逗号拆（{@code in=1,2}）；{@code Collection} 逐元素取值，
      * 元素内部的逗号不再被拆；其余（标量、手工构造的多元素）直接作绑定序列。
-     * 不校验个数——合不合法由取值的操作符决定。
+     * <p>不校验个数——合不合法由取值的操作符决定；null 元素一律拒绝（消息指到第几个），
+     * 为什么不折算成任何语义见 {@link #buildConditionFromFieldCondition}。
      */
     private Object[] manyValues(FieldCondition fc) {
         var values = fc.getValues();
-        if (values.size() == 1) {
-            switch (values.getFirst()) {
-                case String s -> {
-                    return StrUtil.split(s, ",").toArray();
-                }
-                case Collection<?> c -> {
-                    return c.toArray();
-                }
-                case null, default -> {
-                }
-            }
+        var many = switch (values.size() == 1 ? values.getFirst() : null) {
+            case String s -> StrUtil.split(s, ",").toArray();
+            case Collection<?> c -> c.toArray();
+            case null, default -> values.toArray();
+        };
+        var nullIdx = IntStream.range(0, many.length).filter(i -> many[i] == null).findFirst();
+        if (nullIdx.isPresent()) {
+            throw new FilamentsError("条件 %s 的第 %d 个值不能为 null（操作符 %s）：判空请用 isNull / isNotNull，匹配文本请显式传字符串".formatted(
+                    fc.getField(), nullIdx.getAsInt() + 1, fc.getOperator()));
         }
-        return values.toArray();
+        return many;
     }
 
     /**
@@ -670,7 +673,8 @@ public abstract class Filaments<T> {
      * （只有多值操作符才认逗号分隔简写，见 {@link #manyValues}）。集合里套一个值也认。
      *
      * <p>多于一个值直接抛错——jOOQ 对多余绑定值是静默丢弃的（只留第一个），
-     * 不抛就是查出错数据而不是报错。
+     * 不抛就是查出错数据而不是报错。值为 null 同样抛错，为什么不折算成文本 {@code 'null'}
+     * 见 {@link #buildConditionFromFieldCondition}。
      */
     private Object singleValue(FieldCondition fc) {
         var values = fc.getValues();
@@ -680,6 +684,10 @@ public abstract class Filaments<T> {
         if (candidates.length != 1) {
             throw new FilamentsError("操作符 %s 只接受 1 个值，实际 %d 个: %s".formatted(
                     fc.getOperator(), candidates.length, Arrays.toString(candidates)));
+        }
+        if (candidates[0] == null) {
+            throw new FilamentsError("条件 %s 的值不能为 null（操作符 %s）：判空请用 isNull / isNotNull，匹配文本请显式传字符串".formatted(
+                    fc.getField(), fc.getOperator()));
         }
         return candidates[0];
     }
@@ -699,6 +707,16 @@ public abstract class Filaments<T> {
      *
      * <p>值的形态在这里定型：几个占位符就取几个值，与解析期无关，所以手工构造的
      * FieldCondition（子类扩展 / {@code lg} 子树里塞的条件）也走同一套规则。
+     *
+     * <p>取值型操作符（{@link #singleValue} / {@link #manyValues} 两条出口）遇到 null 一律抛错，
+     * 不折算成任何"合理"语义：null 绑上去渲染成 {@code f = ?} + NULL，三值逻辑下谓词恒不真——
+     * {@code eq} 静默 0 行，{@code notIn} 连"排除"都变成 0 行，调用方只看得到空结果集，
+     * 排查方向被引到存量数据上；而折算成文本 {@code 'null'} 是替调用方选定意图——传 null 的人
+     * 想判空、想匹配文本、还是想让条件不生效，三者互斥，只有报错一种都不猜。
+     * <p>出路：判空用 {@code isNull} / {@code isNotNull}（它们根本不取值，键上绑 null 也不受影响，
+     * 是全表唯一"值不参与"的地方）；要匹配文本就显式传字符串；条件不生效就别把这个键放进 map。
+     * URL 入口传不进真 null（{@code ?name=null} 落到 map 里就是字符串 {@code "null"}），
+     * 所以这条只约束 map/JSON 入参与手工构造的 FieldCondition。
      */
     protected Condition buildConditionFromFieldCondition(FieldCondition fc) {
         var fieldName = fc.getField();
@@ -730,7 +748,8 @@ public abstract class Filaments<T> {
             // 两端不加括号：`between (? and ?)` 在 PG 是语法错误
             case FieldCondition.BETWEEN -> condition("%s between ? and ?".formatted(funcChainResult), rangeValues(fc));
             case FieldCondition.NOT_BETWEEN -> condition("%s not between ? and ?".formatted(funcChainResult), rangeValues(fc));
-            // 空值判定不带绑定参数：键上的值（=1 / 留空 / 任意内容）一律忽略，只渲染谓词本身。
+            // 空值判定不带绑定参数：键上的值（=1 / 留空 / null / 任意内容）一律忽略，只渲染谓词本身。
+            // 这是全表唯一"值不参与"的地方，也是 null 唯一的正路：取值型操作符的 null 在出口处响亮拒绝。
             // 取反就是换用另一个谓词（isNotNull）：lg 的 !(...) 只是括号组的 OR 连接标记，不做逻辑取反
             case FieldCondition.IS_NULL -> condition("%s is null".formatted(funcChainResult));
             case FieldCondition.IS_NOT_NULL -> condition("%s is not null".formatted(funcChainResult));
@@ -987,7 +1006,7 @@ public abstract class Filaments<T> {
             if (cleaned.contains(".")) {
                 // 表达式当分组列时 intoMaps 的键是整段 SQL，用最后一个路径段（json 键）当别名
                 var segments = identsSafe(cleaned);
-                groupField = field(jsonKeyExpr(cleaned)).as(config.naming.apply(segments.getLast()));
+                groupField = field(jsonKeyExpr(cleaned)).as(config.naming(segments.getLast()));
             } else {
                 identsSafe(cleaned);
                 groupField = columnRef(cleaned);

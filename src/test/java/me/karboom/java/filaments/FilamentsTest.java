@@ -331,7 +331,9 @@ class FilamentsTest {
         void pageWithoutSizeStillPaginates() {
             // 只给 p 曾经被当成"没有分页意图"：p 被丢弃、整表返回且不报错。
             // 现在缺的页大小由 config.pageSize 补；两个键都不给时仍是全量取数。
-            var size2 = new TestFilaments(TestDb.TABLE, new FilamentsConfig().withPageSize(2L));
+            var sizeCfg = new FilamentsConfig();
+            sizeCfg.pageSize = 2L;
+            var size2 = new TestFilaments(TestDb.TABLE, sizeCfg);
             seed(5);
             assertAll(
                     () -> assertThat(size2.get(TestDb.db(), Map.of("p", 2, "od", "id")).stream().map(u -> u.id).toList())

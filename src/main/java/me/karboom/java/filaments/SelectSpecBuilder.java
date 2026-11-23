@@ -278,6 +278,7 @@ public class SelectSpecBuilder {
      *
      * <p>值原样收进 {@code values}，逗号不在这里拆：要不要拆由操作符在渲染期决定
      * （{@code Filaments#buildConditionFromFieldCondition}，那里才知道 SQL 要几个占位符）。
+     * null 也在这里原样收下——它是"值不对"还是"根本不该有值"由操作符判定，拒绝点同在渲染期。
      */
     public FieldCondition buildFieldCondition(Map<String, Object> pickedQuery, String key) {
         var rawValue = pickedQuery.get(key);

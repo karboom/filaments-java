@@ -128,7 +128,9 @@ class SelectSpecBuilderTest {
 
         @Test
         void paginationOnlyPageFollowsCustomConfig() {
-            var custom = new SelectSpecBuilder(new FilamentsConfig().withPageSize(7L));
+            var cfg = new FilamentsConfig();
+            cfg.pageSize = 7L;
+            var custom = new SelectSpecBuilder(cfg);
             var spec = custom.parse(new LinkedHashMap<>(Map.of("p", 2)));
             assertAll(
                     () -> assertThat(spec.getLimit()).isEqualTo(7),

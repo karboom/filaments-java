@@ -22,6 +22,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 /**
  * 构造函数 / isJsonType：模型字段扫描与 JSON 分类。
@@ -159,16 +160,19 @@ class ConstructorTest {
         }
 
         @Test
-        void configsAreNotSharedBetweenInstances() {
-            var shared = new FilamentsConfig().withPageSize(5L);
+        void configIsClonedOnBuild() {
+            var shared = new FilamentsConfig();
+            shared.pageSize = 5L;
             var a = new TestFilaments(TestDb.TABLE, shared);
             var b = new TestFilaments(TestDb.TABLE);
-            // 显式传的 config 原对象被持有（多实例共享就靠这个）；不传的各持一份默认配置。
-            // 配置不可变，所以"共享一份"不会再出现一个实例改动影响另一个。
-            assertThat(a.config).isSameAs(shared);
-            assertThat(a.config.pageSize).isEqualTo(5);
-            assertThat(b.config).isNotSameAs(a.config);
-            assertThat(b.config.pageSize).isEqualTo(20);
+            // 实例收的是构造期 clone 的快照：之后改调用方原对象，已建实例不跟着变；
+            // "共享配置"的形态不变——同源值各拿一份副本，互不牵连。
+            shared.pageSize = 9L;
+            assertAll(
+                    () -> assertThat(a.config).isNotSameAs(shared),
+                    () -> assertThat(a.config.pageSize).isEqualTo(5),
+                    () -> assertThat(b.config).isNotSameAs(a.config),
+                    () -> assertThat(b.config.pageSize).isEqualTo(20));
         }
     }
 

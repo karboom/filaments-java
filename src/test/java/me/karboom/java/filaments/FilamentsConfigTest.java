@@ -4,7 +4,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.PropertyNamingStrategies;
+import tools.jackson.databind.PropertyNamingStrategy;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.json.JsonMapper;
 
+import java.util.List;
 import java.util.Map;
 import java.util.function.UnaryOperator;
 
@@ -29,6 +35,7 @@ import static org.jooq.impl.DSL.using;
  * │ name       │ name      │ name      │ name        │ name    │         │
  * └────────────┴───────────┴───────────┴─────────────┴─────────┴─────────┘
  * 注：snake/lower/asIs 对已是目标风格的输入幂等；camel 遵循 hutool 语义（连续大写段不降格）。
+ * 这四个只是 naming 槽显式绑定的备选；默认 naming 由 mapper 派生，见 DerivedNaming。
  * </pre>
  */
 @Timeout(5)
@@ -116,26 +123,28 @@ class FilamentsConfigTest {
                     () -> assertThat(config.pageSize).isEqualTo(20),
                     () -> assertThat(config.sqlFuncList).isSameAs(FilamentsConfig.PG_FUNCS),
                     () -> assertThat(config.mapper).isSameAs(FilamentsConfig.DEFAULT_MAPPER),
-                    // 方法引用实例不保证 ==，用行为断言
-                    () -> assertThat(config.naming.apply("wechatId")).isEqualTo("wechat_id"));
+                    // 派生函数不保证 ==，用行为断言
+                    () -> assertThat(config.naming("wechatId")).isEqualTo("wechat_id"));
         }
 
         @Test
-        void withCopiesLeaveOriginalIntact() {
-            var changed = config.withPageSize(7L);
+        void cloneLeavesOriginalIntact() {
+            var changed = config.clone();
+            changed.pageSize = 7L;
             assertAll(
                     () -> assertThat(changed.pageSize).isEqualTo(7),
-                    // 原实例一字未动：withXxx 产出的是整份新副本
+                    // 原对象一字未动：clone 产出的是整份新副本
                     () -> assertThat(config.pageSize).isEqualTo(20));
         }
 
         @Test
-        void withCopiesKeepOtherItems() {
-            var changed = config.withNaming(FilamentsConfig::camel)
-                    .withNameSplitter("#")
-                    .withSqlFuncList(FilamentsConfig.MYSQL_FUNCS);
+        void cloneCopiesAllItems() {
+            var changed = config.clone();
+            changed.naming = FilamentsConfig::camel;
+            changed.nameSplitter = "#";
+            changed.sqlFuncList = FilamentsConfig.MYSQL_FUNCS;
             assertAll(
-                    () -> assertThat(changed.naming.apply("wechat_id")).isEqualTo("wechatId"),
+                    () -> assertThat(changed.naming("wechat_id")).isEqualTo("wechatId"),
                     () -> assertThat(changed.nameSplitter).isEqualTo("#"),
                     () -> assertThat(changed.sqlFuncList).isSameAs(FilamentsConfig.MYSQL_FUNCS),
                     // 没点到的项照抄默认值
@@ -163,9 +172,10 @@ class FilamentsConfigTest {
 
         @Test
         void prefixedNamingAppliesToColumns() {
-            // 故意用非幂等 naming：每跑一次多一个前缀，任何通道重复归一化都会露出 t_t_，
+            // 故意用非幂等命名：每跑一次多一个前缀，任何通道重复归一化都会露出 t_t_，
             // 内置 snake/camel/lower/asIs 都是幂等的，测不出这类问题
-            var config = new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s));
+            var config = new FilamentsConfig();
+            config.naming = s -> "t_" + FilamentsConfig.snake(s);
             var filament = new TestFilaments("users", "id", config);
             var sql = filament.build(using(POSTGRES), Map.of("rt", "name,createTime,tags"))
                     .getSQL();
@@ -179,7 +189,8 @@ class FilamentsConfigTest {
         @Test
         void prefixedNamingIsConsistentAcrossChannels() {
             // rt / where / od 三条通道必须拼出同一个列名，否则同一张表的读写分裂成两套名字
-            var config = new FilamentsConfig().withNaming(s -> "t_" + FilamentsConfig.snake(s));
+            var config = new FilamentsConfig();
+            config.naming = s -> "t_" + FilamentsConfig.snake(s);
             var filament = new TestFilaments("users", "id", config);
             var sql = filament.build(using(POSTGRES), Map.of(
                             "rt", "name",
@@ -194,11 +205,102 @@ class FilamentsConfigTest {
 
         @Test
         void camelNamingAppliesToColumns() {
-            var config = new FilamentsConfig().withNaming(FilamentsConfig::camel);
+            var config = new FilamentsConfig();
+            config.naming = FilamentsConfig::camel;
             var filament = new TestFilaments("users", "id", config);
             var sql = filament.build(using(POSTGRES), Map.of("rt", "wechatId,createTime"))
                     .getSQL();
             assertThat(sql).contains("\"wechatId\"").contains("\"createTime\"");
+        }
+    }
+
+    // endregion
+
+    // region 派生命名（读写同源是构造保证，不再靠配对纪律）
+
+    @Nested
+    class DerivedNaming {
+
+        /** 键名逐位比对用的样本 POJO：覆盖普通双段驼峰 */
+        static class Doc {
+            public Integer totalCount;
+            public String wechatId;
+        }
+
+        private static ObjectMapper mapperWith(PropertyNamingStrategy strategy) {
+            return JsonMapper.builder()
+                    .propertyNamingStrategy(strategy)
+                    .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+                    .build();
+        }
+
+        @Test
+        void derivedNamingMatchesWrittenKeys() {
+            // 正交表：策略（SNAKE/LOWER_CAMEL/LOWER）× 字段（totalCount/wechatId），
+            // 派生查询键必须与 mapper 实际写出的键逐位重合——F2 类失配的构造性反证
+            var doc = new Doc();
+            doc.totalCount = 1;
+            doc.wechatId = "wx";
+            for (var strategy : List.<PropertyNamingStrategy>of(
+                    PropertyNamingStrategies.SNAKE_CASE,
+                    PropertyNamingStrategies.LOWER_CAMEL_CASE,
+                    PropertyNamingStrategies.LOWER_CASE)) {
+                var mapper = mapperWith(strategy);
+                var naming = FilamentsConfig.namingFrom(mapper);
+                var written = mapper.readTree(mapper.writeValueAsString(doc));
+                assertAll(
+                        () -> assertThat(written.has(naming.apply("totalCount"))).isTrue(),
+                        () -> assertThat(written.has(naming.apply("wechatId"))).isTrue());
+            }
+        }
+
+        @Test
+        void noStrategyMapperFallsBackToAsIs() {
+            // 未配策略的 mapper getPropertyNamingStrategy 返回 null（Jackson 原样写键），
+            // 派生必须对应 asIs，否则查询侧改写了库里不存在的键
+            var naming = FilamentsConfig.namingFrom(JsonMapper.builder().build());
+            assertAll(
+                    () -> assertThat(naming.apply("wechatId")).isEqualTo("wechatId"),
+                    () -> assertThat(naming.apply("userID")).isEqualTo("userID"));
+        }
+
+        @Test
+        void defaultNamingFollowsJacksonSnake() {
+            // 默认配置的命名派生自 DEFAULT_MAPPER：常规输入与旧 hutool snake 行为一致，
+            // userID 边角以 Jackson 为准（user_id），这正是读写同源的代价与收益
+            var config = new FilamentsConfig();
+            assertAll(
+                    () -> assertThat(config.naming("wechatId")).isEqualTo("wechat_id"),
+                    () -> assertThat(config.naming("userID")).isEqualTo("user_id"),
+                    () -> assertThat(config.naming("wechat_id")).isEqualTo("wechat_id"));
+        }
+
+        @Test
+        void mapperSwapReDerivesUnboundNaming() {
+            var config = new FilamentsConfig();
+            config.mapper = mapperWith(PropertyNamingStrategies.LOWER_CAMEL_CASE);
+            assertAll(
+                    () -> assertThat(config.naming("totalCount")).isEqualTo("totalCount"),
+                    // 下划线输入在 LowerCamel 策略下原样（策略只做正向改写），文档已注明的宽容度代价
+                    () -> assertThat(config.naming("total_count")).isEqualTo("total_count"));
+        }
+
+        @Test
+        void boundNamingSurvivesMapperSwap() {
+            // naming 槽显式绑定后换 mapper 不得覆盖用户规则——解耦语义要钉死
+            var config = new FilamentsConfig();
+            config.naming = FilamentsConfig::lower;
+            config.mapper = mapperWith(PropertyNamingStrategies.SNAKE_CASE);
+            assertThat(config.naming("wechatId")).isEqualTo("wechatid");
+        }
+
+        @Test
+        void unbindingRestoresDerivation() {
+            // naming 槽的 null 是正式语义（未绑定=按 mapper 派生），置回即解除绑定
+            var config = new FilamentsConfig();
+            config.naming = FilamentsConfig::lower;
+            config.naming = null;
+            assertThat(config.naming("wechatId")).isEqualTo("wechat_id");
         }
     }
 
