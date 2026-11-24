@@ -25,11 +25,11 @@ A lightweight ORM on top of jOOQ: a query condition is a short string shaped lik
 ## Quick start
 
 ```gradle
-implementation 'io.github.karboom:filaments-java:2.1.0'
+implementation 'io.github.karboom:filaments-java:2.2.0'
 ```
 
 ```xml
-<dependency><groupId>io.github.karboom</groupId><artifactId>filaments-java</artifactId><version>2.1.0</version></dependency>
+<dependency><groupId>io.github.karboom</groupId><artifactId>filaments-java</artifactId><version>2.2.0</version></dependency>
 ```
 
 Java 22+, PostgreSQL.
@@ -288,4 +288,4 @@ var stat = userFilament.aggregation(db,
 
 ## Contributing & license
 
-Issues and Pull Requests are welcome. Licensed under the [Apache License, Version 2.0](LICENSE).
+Issues and Pull Requests are welcome. Release history and upgrade notes live in [CHANGELOG](CHANGELOG.md). Licensed under the [Apache License, Version 2.0](LICENSE).

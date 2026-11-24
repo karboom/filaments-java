@@ -25,11 +25,11 @@
 ## 快速开始
 
 ```gradle
-implementation 'io.github.karboom:filaments-java:2.1.0'
+implementation 'io.github.karboom:filaments-java:2.2.0'
 ```
 
 ```xml
-<dependency><groupId>io.github.karboom</groupId><artifactId>filaments-java</artifactId><version>2.1.0</version></dependency>
+<dependency><groupId>io.github.karboom</groupId><artifactId>filaments-java</artifactId><version>2.2.0</version></dependency>
 ```
 
 Java 22+，PostgreSQL。
@@ -286,4 +286,4 @@ var stat = userFilament.aggregation(db,
 
 ## 贡献与许可
 
-欢迎提交 Issue 和 Pull Request。Licensed under the [Apache License, Version 2.0](LICENSE).
+欢迎提交 Issue 和 Pull Request。版本历史与升级注意事项见 [CHANGELOG](CHANGELOG.md)。Licensed under the [Apache License, Version 2.0](LICENSE).
