@@ -36,7 +36,8 @@ import static org.jooq.impl.DSL.using;
  * │ 9  │ `tags`       │ [substr(1,2)]│ LT           │
  * └────┴──────────────┴──────────────┴──────────────┘
  * 异常路径（负向）：非法字段名 / 函数链越白名单 / 未知操作符。
- * 值的形态（单值不拆逗号、多值简写才拆、个数校验）见 ValueShape 组。
+ * 值的形态（单值不拆逗号、多值简写才拆、个数校验）见 ValueShape 组；
+ * 值为 null 的拒绝（单值 / 各元素 / intersect）与 isNull、isNotNull 的例外见 NullValue 组。
  * 渲染断言用无连接 DSLContext（不 mock）；实际取数在 FilamentsTest 走真库。
  * </pre>
  */
@@ -234,6 +235,55 @@ class BuildConditionTest {
             // 键上绑几个值都不进 SQL，也不参与个数校验
             assertThat(sql(cond("name", List.of(), FieldCondition.IS_NULL, "a", "b")))
                     .isEqualTo("(\"name\" is null)");
+        }
+    }
+
+    // endregion
+
+    // region 值为 null 一律拒绝（不折算成文本 'null'，也不改写成 is null 谓词）
+
+    @Nested
+    class NullValue {
+
+        @Test
+        void singleValueNullRejectedNamesFieldAndOperator() {
+            assertThatThrownBy(() -> sql(cond("name", List.of(), FieldCondition.EQ, (Object) null)))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("条件 name 的值不能为 null")
+                    .hasMessageContaining("操作符 EQ");
+        }
+
+        @Test
+        void inElementNullRejectedNamesPosition() {
+            // in 绑 NULL 渲染成 `in (?)`，三值逻辑下恒不真；静默 0 行看上去只像"库里没这数据"
+            assertThatThrownBy(() -> sql(cond("id", List.of(), FieldCondition.IN, "a", null)))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("条件 id 的第 2 个值不能为 null");
+        }
+
+        @Test
+        void betweenEndNullRejectedNamesPosition() {
+            assertThatThrownBy(() -> sql(cond("age", List.of(), FieldCondition.BETWEEN, 1, null)))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("条件 age 的第 2 个值不能为 null");
+        }
+
+        @Test
+        void intersectElementNullRejected() {
+            // 值经 jsonb_path_exists 的 vars 绑定，绑定前同样先过 null 拒绝
+            assertThatThrownBy(() -> sql(cond("tags", List.of(), FieldCondition.INTERSECT, "a", null)))
+                    .isInstanceOf(FilamentsError.class)
+                    .hasMessageContaining("条件 tags 的第 2 个值不能为 null");
+        }
+
+        @Test
+        void isNullToleratesBoundNull() {
+            // 全表唯一"值不参与"的地方：null 和 1 / 留空 / 任意内容一样被忽略，谓词照渲染
+            assertAll(
+                    () -> assertThat(sql(cond("name", List.of(), FieldCondition.IS_NULL, (Object) null)))
+                            .isEqualTo("(\"name\" is null)"),
+                    () -> assertThat(sql(cond("address.city", List.of("substr(1,2)"), FieldCondition.IS_NOT_NULL, (Object) null)))
+                            .isEqualTo("(substr(\"address\" #>> '{city}', 1,2) is not null)"));
         }
     }
 
